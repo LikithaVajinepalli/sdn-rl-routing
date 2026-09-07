@@ -106,7 +106,11 @@ class SDNControllerApp(app_manager.RyuApp):
     @set_ev_cls(ofp_event.EventOFPPortDescStatsReply, MAIN_DISPATCHER)
     def _port_desc_reply_handler(self, ev):
         dpid = ev.msg.datapath.id
+        ofproto = ev.msg.datapath.ofproto
         for port in ev.msg.body:
+            if port.port_no > ofproto.OFPP_MAX:
+                continue  # skip OFPP_LOCAL etc - not a real data-plane port
+            self.network_state.record_switch_port(dpid, port.port_no)
             speed_mbps = (port.curr_speed or 0) / 1000.0
             self.network_state.record_port_speed(dpid, port.port_no, speed_mbps)
 
@@ -147,7 +151,13 @@ class SDNControllerApp(app_manager.RyuApp):
 
     def _handle_data_packet_in(self, ev, eth):
         """Minimal learning-switch fallback so Phase 1 has real traffic to
-        measure. Phase 3 replaces this with RL/Dijkstra flow installation."""
+        measure. Phase 3 replaces this with RL/Dijkstra flow installation.
+
+        The topology is deliberately built with loops (redundant paths for
+        RL), so unlike a textbook learning switch this can't blindly flood
+        out every port - that would broadcast-storm around the loop. Instead
+        it floods only out host-facing ports plus spanning-tree switch
+        links (see NetworkState.flood_ports)."""
         msg = ev.msg
         datapath = msg.datapath
         ofproto, parser = datapath.ofproto, datapath.ofproto_parser
@@ -156,12 +166,15 @@ class SDNControllerApp(app_manager.RyuApp):
 
         table = self.mac_to_port.setdefault(dpid, {})
         table[eth.src] = in_port
-        out_port = table.get(eth.dst, ofproto.OFPP_FLOOD)
-        actions = [parser.OFPActionOutput(out_port)]
+        known_out_port = table.get(eth.dst)
 
-        if out_port != ofproto.OFPP_FLOOD:
+        if known_out_port is not None:
+            actions = [parser.OFPActionOutput(known_out_port)]
             match = parser.OFPMatch(in_port=in_port, eth_dst=eth.dst)
             self._add_flow(datapath, 1, match, actions)
+        else:
+            flood_ports = self.network_state.flood_ports(dpid, in_port)
+            actions = [parser.OFPActionOutput(p) for p in sorted(flood_ports)]
 
         data = msg.data if msg.buffer_id == ofproto.OFP_NO_BUFFER else None
         datapath.send_msg(
@@ -181,8 +194,13 @@ class SDNControllerApp(app_manager.RyuApp):
 
     def _probe_loop(self):
         while True:
-            for src_dpid, dst_dpid, data in list(self.network_state.graph.edges(data=True)):
-                src_port = data.get("src_port")
+            for u, v, data in list(self.network_state.graph.edges(data=True)):
+                ports = data.get("ports", {})
+                # Probe from a single, deterministic direction per undirected
+                # edge (the lower dpid) - delay is a property of the link,
+                # not of which end we happen to measure from.
+                src_dpid, dst_dpid = (u, v) if u < v else (v, u)
+                src_port = ports.get(src_dpid)
                 datapath = self.datapaths.get(src_dpid)
                 if datapath is None or src_port is None:
                     continue
@@ -205,13 +223,18 @@ class SDNControllerApp(app_manager.RyuApp):
                 continue
             prev, curr = pair
             bw = self.network_state.link_bw_mbps(dpid, port_no, DEFAULT_LINK_BW_MBPS)
-            neighbour_dpid = self._neighbour_dpid(dpid, port_no)
+            neighbour_dpid = self.network_state.neighbour_dpid(dpid, port_no)
             recent_delays = self.network_state.recent_delays(LinkKey(dpid, port_no, neighbour_dpid or 0))
-            round_trip_ms = recent_delays[-1] * 2 if recent_delays else self.network_state.echo_rtt_ms.get(dpid, 0.0)
+            if recent_delays:
+                delay_ms = recent_delays[-1]
+            else:
+                src_rtt = self.network_state.echo_rtt_ms.get(dpid, 0.0)
+                dst_rtt = self.network_state.echo_rtt_ms.get(neighbour_dpid, 0.0) if neighbour_dpid else 0.0
+                delay_ms = latency_probe.fallback_delay_ms(src_rtt, dst_rtt)
             switch_ports = [p for (d, p) in self.network_state.port_samples if d == dpid]
             switch_rates = self.network_state.switch_port_rates_bps(dpid, switch_ports)
             metrics = compute_link_metrics(
-                prev, curr, bw, round_trip_ms, recent_delays, switch_rates
+                prev, curr, bw, delay_ms, recent_delays, switch_rates
             )
             rows.append(
                 [
@@ -230,11 +253,3 @@ class SDNControllerApp(app_manager.RyuApp):
             return
         headers = ["dpid", "port", "util", "delay", "loss", "trust", "switch_thpt", "link/switch"]
         print(tabulate(rows, headers=headers, tablefmt="simple"))
-
-    def _neighbour_dpid(self, dpid: int, port_no: int):
-        for u, v, data in self.network_state.graph.edges(data=True):
-            if u == dpid and data.get("src_port") == port_no:
-                return v
-            if v == dpid and data.get("dst_port") == port_no:
-                return u
-        return None

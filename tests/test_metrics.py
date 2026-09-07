@@ -136,7 +136,7 @@ def test_compute_link_metrics_end_to_end():
         prev,
         curr,
         bw_mbps=10.0,
-        round_trip_ms=20.0,
+        delay_ms=10.0,
         recent_delays_ms=[9.0, 10.0, 11.0],
         switch_port_rates_bps=[1_250_000, 500_000],
     )

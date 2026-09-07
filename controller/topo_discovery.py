@@ -20,15 +20,20 @@ def sync_from_ryu_topology(app, network_state: NetworkState) -> None:
     links = get_link(app, None)
 
     nodes = [sw.dp.id for sw in switches]
-    edges = []
+
+    # ryu.topology.api.get_link returns each physical link as TWO Link
+    # objects (A->B and B->A). NetworkX's Graph is undirected, so naively
+    # adding both as separate (u, v, {...}) edges just overwrites the same
+    # undirected edge's attributes with whichever direction was added last -
+    # silently losing one endpoint's port number. Merge both directions'
+    # port info into a single `ports` dict keyed by dpid instead.
+    edge_ports: dict = {}
     for link in links:
-        edges.append(
-            (
-                link.src.dpid,
-                link.dst.dpid,
-                {"src_port": link.src.port_no, "dst_port": link.dst.port_no},
-            )
-        )
+        a, b = link.src.dpid, link.dst.dpid
+        key = (min(a, b), max(a, b))
+        edge_ports.setdefault(key, {})[link.src.dpid] = link.src.port_no
+
+    edges = [(a, b, {"ports": ports}) for (a, b), ports in edge_ports.items()]
     network_state.sync_graph(nodes, edges)
 
 

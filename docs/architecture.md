@@ -130,6 +130,38 @@ production-grade telemetry. See `/docs/security-notes.md` (Phase 5) and
   command — dpid/port must be positive ints, delay/loss/bandwidth must fall
   within sane bounds. Auth is **not yet** added (Phase 5).
 
+## Loop prevention in the Phase 1 fallback forwarding (found during manual testing)
+
+The topology is deliberately built with loops (ring + chords, for path
+diversity). Mininet's `OVSSwitch(stp=True)` only enables STP when
+`failMode='standalone'` - useless here, since we run switches under a
+remote controller in `secure` fail mode. That means loop prevention has to
+happen in the controller itself, which is the correct place for an
+SDN-native design anyway.
+
+`NetworkState.sync_graph` computes a spanning tree (`nx.minimum_spanning_tree`,
+unweighted - any spanning tree works, it just needs to break cycles) over the
+discovered topology on every topology change, and `NetworkState.flood_ports`
+uses it: a port floods only if it's host-facing (no discovered switch
+neighbour) or its switch-to-switch link is on the spanning tree. Off-tree
+chord links are excluded from *flooding* only - Phase 3's real RL/Dijkstra
+routing installs explicit unicast flows and is not restricted to the tree.
+
+This also required fixing how switch-to-switch links are mirrored into the
+graph: `ryu.topology.api.get_link` returns each physical link as two `Link`
+objects (A->B and B->A), but `NetworkX`'s `Graph` is undirected, so naively
+adding both as separate edges silently overwrote one direction's port number
+whichever was added last. Edges now carry a `ports: {dpid: local_port_no}`
+dict merged from both directions instead of asymmetric `src_port`/`dst_port`
+keys - `topo_discovery.py`.
+
+**Symptom this fixed:** `pingall` reported 100% dropped, even between hosts
+on the *same* switch, and the delay metric showed ~30-38 **seconds** instead
+of ~5ms. Root cause: the naive flood-everything fallback broadcast-stormed
+across the topology's loops on the very first ARP packet, saturating the
+controller badly enough that echo replies (which the delay fallback depends
+on) were processed only once, very late, and never again.
+
 ## Known Phase 1 limitations (tracked, not hidden)
 
 - No authentication on the injection REST API yet (Phase 5).

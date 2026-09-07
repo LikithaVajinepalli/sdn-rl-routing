@@ -137,16 +137,22 @@ def compute_link_metrics(
     prev: PortSample,
     curr: PortSample,
     bw_mbps: float,
-    round_trip_ms: float,
+    delay_ms: float,
     recent_delays_ms: Iterable[float],
     switch_port_rates_bps: Iterable[float],
     error_rate_per_sec: Optional[float] = None,
 ) -> LinkMetrics:
     """Convenience wrapper computing all six features for one link/port in
     one call, given the raw samples plus the switch-wide port rates needed
-    for the two switch-relative features."""
+    for the two switch-relative features.
+
+    `delay_ms` is already a one-way delay estimate (see
+    controller/latency_probe.py for how the caller derives it - either from
+    a probe sample directly, or via one_way_delay_ms()/fallback_delay_ms()
+    when no probe sample is available yet); this function does not halve it
+    again."""
     util = link_utilization(prev, curr, bw_mbps)
-    delay = one_way_delay_ms(round_trip_ms)
+    delay = max(0.0, delay_ms)
     loss = packet_loss_pct(prev, curr)
     jitter = delay_jitter_ms(recent_delays_ms)
     dt = curr.timestamp - prev.timestamp

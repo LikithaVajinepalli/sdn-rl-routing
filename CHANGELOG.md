@@ -3,7 +3,32 @@
 All notable changes to this project are logged here, one phase/feature per
 entry, newest first.
 
-## [Unreleased] — Phase 1: Network Emulation & Statistics Collection
+## [Unreleased] — Phase 1 fixes found during manual WSL2 testing
+
+### Fixed
+- `pingall` was 100% dropped (even between hosts on the same switch), and
+  the delay metric showed ~30s instead of ~5ms. Root cause: the Phase 1
+  fallback learning-switch flooded blindly out every port, broadcast-
+  storming across the topology's intentional loops (ring + chords) and
+  saturating the controller. `NetworkState` now computes a spanning tree
+  over the discovered topology and `flood_ports()` restricts flooding to
+  host-facing + spanning-tree ports; off-tree chord links stay fully usable
+  for Phase 3's real routing, just not for broadcast.
+- `topo_discovery.py`'s undirected-graph edges silently lost one direction's
+  port number (`ryu.topology.api.get_link` returns each link as two `Link`
+  objects, and `nx.Graph` being undirected meant the second `add_edges_from`
+  call overwrote the first's attributes). Edges now carry a merged
+  `ports: {dpid: port_no}` dict instead of direction-dependent
+  `src_port`/`dst_port` keys.
+- `controller/metrics.py`'s `compute_link_metrics` took a `round_trip_ms`
+  and halved it internally, but `main_app.py`'s caller was already passing
+  an already-halved probe estimate through a needless double/halve dance
+  that obscured the real bug above - simplified to take `delay_ms` directly.
+- Setup docs (README/requirements.txt): the Ubuntu 20.04 apt `mininet`
+  package only ships a Python 2 module; `ryu-manager` needs `PYTHONPATH=.`
+  since it's a console-script entry point, not run via `python3 -m`.
+
+## Phase 1: Network Emulation & Statistics Collection
 
 ### Added
 - `topology/config.py` — `TopologyConfig`/`LinkProfile` dataclasses; enforces

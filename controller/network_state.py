@@ -7,7 +7,7 @@ import threading
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Deque, Dict, FrozenSet, List, Optional, Set, Tuple
 
 import networkx as nx
 
@@ -45,6 +45,16 @@ class NetworkState:
     def __init__(self):
         self._lock = threading.Lock()
         self.graph = nx.Graph()  # discovered topology: switch dpids as nodes
+        # A spanning tree over `graph`, recomputed on every sync_graph() call.
+        # Ports on a switch-to-switch link that ISN'T in this tree are excluded
+        # from flood_ports() - the topology is deliberately built with loops
+        # (redundant paths for RL), and a naive learning switch that floods
+        # blindly out every port would broadcast-storm across them. Real
+        # routing (Phase 3) installs explicit unicast flows and isn't
+        # restricted to the tree; this only constrains the Phase 1 fallback's
+        # flood/broadcast behavior.
+        self.tree_edges: Set[FrozenSet[int]] = set()
+        self.switch_ports: Dict[int, Set[int]] = defaultdict(set)  # all ports seen per dpid
         self.port_samples: Dict[Tuple[int, int], Deque[PortSample]] = defaultdict(
             lambda: deque(maxlen=2)
         )
@@ -111,7 +121,45 @@ class NetworkState:
         return rates
 
     def sync_graph(self, nodes: List[int], edges: List[Tuple[int, int, dict]]) -> None:
+        """edges carry a `ports` dict mapping {dpid: local_port_no} for the two
+        endpoints of that link - see topo_discovery.sync_from_ryu_topology for
+        why this (rather than direction-dependent src_port/dst_port keys) is
+        needed on an undirected graph."""
         with self._lock:
             self.graph.clear()
             self.graph.add_nodes_from(nodes)
             self.graph.add_edges_from(edges)
+            self.tree_edges = set()
+            if self.graph.number_of_nodes() > 0:
+                tree = nx.minimum_spanning_tree(self.graph)
+                self.tree_edges = {frozenset(e) for e in tree.edges()}
+
+    def record_switch_port(self, dpid: int, port_no: int) -> None:
+        with self._lock:
+            self.switch_ports[dpid].add(port_no)
+
+    def _neighbour_dpid_locked(self, dpid: int, port_no: int) -> Optional[int]:
+        for u, v, data in self.graph.edges(data=True):
+            ports = data.get("ports", {})
+            if ports.get(dpid) == port_no:
+                return v if u == dpid else u
+        return None
+
+    def neighbour_dpid(self, dpid: int, port_no: int) -> Optional[int]:
+        with self._lock:
+            return self._neighbour_dpid_locked(dpid, port_no)
+
+    def flood_ports(self, dpid: int, in_port: int) -> Set[int]:
+        """Ports safe to flood out of: every host-facing port (one with no
+        known switch neighbour), plus inter-switch ports on the spanning
+        tree. Never the ingress port, never an off-tree chord/redundant link
+        (that would broadcast-storm around the loop)."""
+        with self._lock:
+            result = set()
+            for port_no in self.switch_ports.get(dpid, ()):
+                if port_no == in_port:
+                    continue
+                neighbour = self._neighbour_dpid_locked(dpid, port_no)
+                if neighbour is None or frozenset({dpid, neighbour}) in self.tree_edges:
+                    result.add(port_no)
+            return result
