@@ -128,7 +128,25 @@ one direction's port number. Injection API verified too: `/inject/failure` on s3
 connectivity survives a single failure via the ring/chord redundancy),
 `/inject/recover` restored it. **Phase 1 is complete.**
 
-Not yet started: Phase 2 (RL agent), Phase 3 (routing/flow mgmt — main_app.py's
-packet-in handler is currently just a minimal learning switch, a stand-in),
-Phase 4 (dashboard), Phase 5 (security hardening — injection API has no auth
-yet), Phase 6 (remaining docs: srs-traceability.md, rl-design.md).
+**Phase 2 (RL agent) implemented and validated** — tabular Q-learning
+(`rl/q_agent.py`) trained against a NetworkX-based simulator
+(`rl/environment.py`, no Mininet/Ryu needed). 99 unit tests pass total (all
+pure Python). Full design + real numbers in docs/rl-design.md. Headline
+result: benchmarked the trained agent against random and always-shortest-
+path baselines (not just watched the reward curve go up) — trained agent
+beats always-shortest-path by ~8% across 4 evaluation seeds
+(0.65 vs 0.60 vs 0.47 for random). Two real bugs caught by that
+benchmarking discipline, not by unit tests: the environment's original
+demand range never created real congestion (fixed by increasing
+1-6 Mbps + slower load decay), and gamma=0.9 made the agent perform *worse*
+than shortest-path because each step's "next state" is an unrelated
+freshly-sampled (src,dst) pair, not a true trajectory continuation (fixed
+by lowering gamma to 0.3, empirically swept). Trained model:
+models/q_agent.pkl; training log/plot: models/training_log.csv,
+models/reward_curve.png.
+
+Not yet started: Phase 3 (routing/flow mgmt — main_app.py's packet-in
+handler is currently just a minimal learning switch, a stand-in; needs to
+wire rl/q_agent.py's decisions into real flow installation + Dijkstra
+fallback), Phase 4 (dashboard), Phase 5 (security hardening — injection API
+has no auth yet), Phase 6 (remaining docs: srs-traceability.md).

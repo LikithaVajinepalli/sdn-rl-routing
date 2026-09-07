@@ -3,6 +3,45 @@
 All notable changes to this project are logged here, one phase/feature per
 entry, newest first.
 
+## [Unreleased] — Phase 2: Reinforcement Learning Agent
+
+### Added
+- `routing/path_enumeration.py` - candidate path enumeration (Yen's
+  algorithm via NetworkX), pulled forward from Phase 3 since the RL action
+  space needs it too.
+- `rl/path_features.py` - aggregates per-link metrics along a path into
+  `PathFeatures` (the state vector), full continuous fidelity.
+- `rl/state.py` - tabular-only discretization of `PathFeatures` into a
+  Q-table lookup key; isolated so a future DQN can skip it entirely.
+- `rl/reward.py` - the documented reward formula (utilization-weighted
+  heaviest, then loss/delay, then trust).
+- `rl/environment.py` - `SimulatedRoutingEnv`, a NetworkX-based simulator so
+  the agent trains standalone without Mininet/Ryu running.
+- `rl/q_agent.py` - tabular Q-learning, epsilon-greedy, save/load.
+- `rl/train.py` + `rl/config.py` - training loop CLI, episode/reward CSV
+  logging, reward-curve PNG (matplotlib), Q-table checkpointing.
+- `docs/rl-design.md` - state vector, action space, reward function,
+  hyperparameters, and (critically) a benchmark against random and
+  always-shortest-path baselines - not just a reward curve.
+- 40 new unit tests across path enumeration, path features, reward,
+  discretization, the Q-agent, and the environment (99 total, all pure
+  Python - no Mininet/Ryu needed to run any of Phase 2).
+
+### Found and fixed during actual training (not just unit tests)
+- The environment's initial default demand (0.5-3 Mbps) never pushed any
+  link past ~43% utilization even under a policy that ignores congestion
+  entirely - meaning there was nothing real to learn to avoid. Increased to
+  1-6 Mbps with slower background-load decay so congestion becomes a real,
+  visible factor.
+- `gamma=0.9` (the initial default) made the trained agent perform *worse*
+  than a naive always-shortest-path baseline - caught by benchmarking
+  against baselines rather than only watching the reward curve trend
+  upward. Root cause: each step's "next state" is an unrelated, freshly
+  sampled (src, dst) pair, so a high discount factor bootstraps heavily off
+  a value unrelated to the action just taken. Lowered to `gamma=0.3`
+  (empirically swept 0.0/0.3/0.6/0.9), after which the trained agent beats
+  the shortest-path baseline by ~8% across 4 independent evaluation seeds.
+
 ## [Unreleased] — Phase 1 fixes found during manual WSL2 testing
 
 ### Fixed
