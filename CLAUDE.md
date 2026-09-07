@@ -123,9 +123,10 @@ during this manual pass: a broadcast storm across the topology's loops from
 the naive Phase 1 flood-based fallback forwarding (fixed via a spanning-tree-
 restricted flood in NetworkState.flood_ports - see architecture.md), and an
 undirected-graph edge attribute bug in topo_discovery.py that silently lost
-one direction's port number. Still to verify manually: the injection API
-(`/inject/failure`, `/inject/congestion`) actually affecting the emulated
-network as expected.
+one direction's port number. Injection API verified too: `/inject/failure` on s3 port 1 returned 200 and
+`pingall` still reported 0% dropped while that link was down (NFR3 -
+connectivity survives a single failure via the ring/chord redundancy),
+`/inject/recover` restored it. **Phase 1 is complete.**
 
 Not yet started: Phase 2 (RL agent), Phase 3 (routing/flow mgmt — main_app.py's
 packet-in handler is currently just a minimal learning switch, a stand-in),
