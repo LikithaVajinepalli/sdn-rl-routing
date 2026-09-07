@@ -1,0 +1,15 @@
+# Controller / stats collection (Phase 1)
+networkx>=2.8,<3.0
+ryu==4.34
+eventlet==0.30.2          # pinned: newer eventlet breaks ryu's hub on Python >= 3.9
+tabulate>=0.9
+WebOb>=1.8                # used directly by controller/injection_api.py's WSGI routes
+
+# REST client used by tests / fault-injection CLI helper
+requests>=2.28
+
+# Testing
+pytest>=7.0
+
+# NOTE: Mininet and Open vSwitch are NOT pip packages. Install them at the OS level
+# inside WSL2 Ubuntu — see README.md for the install commands.
