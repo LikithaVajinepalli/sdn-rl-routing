@@ -18,29 +18,44 @@ only — later phases append their own run instructions here.
 ```bash
 sudo apt update
 sudo apt install -y mininet openvswitch-switch python3-pip
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+sudo service openvswitch-switch start
+sudo pip3 install -r requirements.txt
 ```
 
-Mininet/OVS are OS packages, not pip packages — installing `requirements.txt`
-alone is not enough to run the topology.
+No venv here on purpose: Mininet needs `sudo` to run (root, for network namespaces),
+and `mn`/`mnexec` come from the APT package, not pip — installing everything with
+`sudo pip3` system-wide means the same packages are visible whether a command is run
+as your normal user (`ryu-manager`) or with `sudo` (`python3 -m topology.run_topology`),
+without extra `--system-site-packages` venv wiring.
+
+**Known gotcha:** the `mininet` APT package on Ubuntu 20.04 only ships a **Python 2**
+module — running `python3 -c "import mininet"` fails even after installing it. The
+`mininet` entry in `requirements.txt` (pip, not apt) supplies the importable Python 3
+module; the APT package is still required for `mn`/`mnexec` and Open vSwitch itself.
 
 ## Running Phase 1
 
-Three terminals, all inside WSL2:
+Three terminals, all inside WSL2, all `cd`'d into this project directory
+(e.g. `/mnt/d/sdn-rl-routing` if this repo lives on a Windows drive).
 
 **Terminal 1 — Ryu controller** (discovery + stats collector + injection API):
 
 ```bash
-sudo ryu-manager --observe-links controller.main_app
+PYTHONPATH=. ryu-manager --observe-links controller.main_app
 ```
 
+No `sudo` needed - Ryu is just a plain TCP/WSGI server. `PYTHONPATH=.` is
+needed because `ryu-manager` is a script installed under `/usr/local/bin`,
+so it doesn't automatically add the current directory to Python's import
+path the way `python3 -m ...` does; without it, `controller.main_app` fails
+to import with `ModuleNotFoundError: No module named 'controller'`.
 `--observe-links` is required so Ryu's built-in topology app performs
 LLDP-based discovery; without it, `controller/topo_discovery.py` sees no
 switches/links. The controller prints a live metrics table (utilization,
 delay, loss %, trust level, switch throughput, link/switch share) once per
-poll tick, and serves the injection REST API on `127.0.0.1:8080`.
+poll tick, and serves the injection REST API on `127.0.0.1:8080`. It's
+normal for it to print "No port stats yet - waiting for switches to
+connect." on repeat until Terminal 2's Mininet topology comes up.
 
 **Terminal 2 — Mininet topology**:
 

@@ -11,5 +11,12 @@ requests>=2.28
 # Testing
 pytest>=7.0
 
-# NOTE: Mininet and Open vSwitch are NOT pip packages. Install them at the OS level
-# inside WSL2 Ubuntu — see README.md for the install commands.
+# Mininet's Python module - the `mininet` APT package on Ubuntu 20.04 only ships
+# Python 2 bindings (/usr/lib/python2.7/dist-packages/mininet), so it's unimportable
+# from our Python 3 code even though `mn`/`mnexec` (the CLI + C helper) come from APT
+# and are still required. This PyPI wheel supplies just the importable py3 module.
+mininet>=2.3.0.dev6
+
+# NOTE: Open vSwitch itself, and Mininet's `mnexec` binary, are NOT pip packages.
+# Install them at the OS level inside WSL2 Ubuntu (`apt install openvswitch-switch
+# mininet`) — see README.md for the full install commands.
