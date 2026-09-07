@@ -106,18 +106,26 @@ distributed multi-agent architecture.
 
 ## Current state (update as phases complete)
 
-**Phase 1 implemented** (topology, discovery, stats polling, hybrid delay
-probing, metrics, injection API, live metrics table) — see CHANGELOG.md for
-the file list and docs/architecture.md for design rationale. Decisions locked
-in for Phase 1: ring-with-chords topology (NetworkX circulant graph), hybrid
-delay measurement (echo RTT + custom-ethertype link probe, validated against
-injectable tc-netem ground truth), REST + CLI injection interface. 53 unit
+**Phase 1 implemented and manually verified working in WSL2 Ubuntu 20.04**
+(topology, discovery, stats polling, hybrid delay probing, metrics,
+injection API, live metrics table) — see CHANGELOG.md for the file list and
+docs/architecture.md for design rationale. Decisions locked in for Phase 1:
+ring-with-chords topology (NetworkX circulant graph), hybrid delay
+measurement (echo RTT + custom-ethertype link probe, validated against
+injectable tc-netem ground truth), REST + CLI injection interface. 59 unit
 tests pass for the pure logic (topology graph, metrics, injection
-validation); the Ryu/Mininet-dependent code (main_app.py, ring_topology.py,
-run_topology.py, topo_discovery.py, stats_poller.py, latency_probe.py,
-injection_api.py) is untested end-to-end — this dev machine is Windows, so
-Mininet/Ryu integration must be verified manually inside WSL2 Ubuntu (see
-README.md's "what's manually verified vs. automated" section).
+validation, network-state spanning-tree/flood logic).
+
+Manually verified in WSL2 (8 switches, 16 hosts, ring+chord topology):
+`pingall` reports 0% dropped, live metrics table shows sane per-link delay
+(~0.5-6ms, matching the ~5ms configured tc-netem delay). Found and fixed
+during this manual pass: a broadcast storm across the topology's loops from
+the naive Phase 1 flood-based fallback forwarding (fixed via a spanning-tree-
+restricted flood in NetworkState.flood_ports - see architecture.md), and an
+undirected-graph edge attribute bug in topo_discovery.py that silently lost
+one direction's port number. Still to verify manually: the injection API
+(`/inject/failure`, `/inject/congestion`) actually affecting the emulated
+network as expected.
 
 Not yet started: Phase 2 (RL agent), Phase 3 (routing/flow mgmt — main_app.py's
 packet-in handler is currently just a minimal learning switch, a stand-in),
