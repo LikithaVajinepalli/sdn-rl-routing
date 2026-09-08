@@ -3,6 +3,47 @@
 All notable changes to this project are logged here, one phase/feature per
 entry, newest first.
 
+## [Unreleased] — Phase 3: Routing & Flow Management
+
+### Added
+- `routing/host_location.py` - `HostLocationTracker`, MAC -> (dpid, port).
+- `routing/dijkstra.py` - independent hop-count-only shortest-path baseline
+  (not piggybacked on the RL's candidate list, so the comparison is real).
+- `routing/decision_engine.py` - `RoutingDecisionEngine`: resolves a routing
+  decision from RL or Dijkstra depending on mode, filters out any candidate
+  using a currently-down link, and catches any RL failure with an automatic
+  Dijkstra fallback (NFR3). Fully unit-testable without Ryu.
+- `routing/flow_installer.py` + `controller/flow_manager.py` - pure
+  path-to-OpenFlow-rule translation (bidirectional/symmetric routing) and
+  the thin Ryu glue that actually installs/removes them.
+- `routing/flow_registry.py` - `ActiveFlowRegistry`, tracking which path is
+  installed for each host pair so a link failure can find affected flows.
+- `controller/main_app.py` - packet-in handling now routes known unicast
+  host pairs via the decision engine (Phase 1's flood fallback still
+  handles broadcast/multicast and not-yet-located destinations); a new
+  `EventOFPPortStatus` handler detects link failure near-instantly (not
+  LLDP-timeout-based) and reroutes affected flows (NFR1, NFR3);
+  `--routing-mode {rl,dijkstra}` / `--rl-model-path` are new `ryu.cfg`
+  options.
+- 34 new unit tests (133 total) covering the new routing/ modules,
+  including RL-failure fallback and down-link-avoidance scenarios.
+
+### Fixed (found while designing the failure-fallback path)
+- `NetworkState`'s link up/down status was keyed by the directed `LinkKey`
+  used for delay tracking, which is asymmetric - and `injection_api.py` was
+  already writing it with a hardcoded fake neighbour dpid (`0`), so it could
+  never match a real lookup. Dormant since nothing read link status in
+  Phase 1/2; Phase 3's fallback logic is the first real consumer. Re-keyed
+  to plain `(dpid, port_no)`, with a new `NetworkState.is_edge_up(a, b)`
+  that checks both sides of an edge.
+- Extracted `NetworkState.live_link_metrics()` so the Phase 1 metrics table
+  and Phase 3's routing decisions read live per-link state from the exact
+  same code path instead of two independent implementations that could
+  silently drift apart; moved the small `fallback_delay_ms` helper from
+  `latency_probe.py` (Ryu-dependent) into `metrics.py` (pure) so
+  `network_state.py` can use it without pulling Ryu into every
+  framework-free module that touches live link state.
+
 ## [Unreleased] — Phase 2: Reinforcement Learning Agent
 
 ### Added

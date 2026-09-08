@@ -78,12 +78,42 @@ def test_flood_ports_all_included_when_topology_already_loop_free():
     assert 2 in result  # the only other inter-switch port, must be included
 
 
-def test_link_status_and_delay_history_roundtrip():
+def test_link_delay_history_roundtrip():
     state = NetworkState()
     key = LinkKey(1, 1, 2)
     state.record_link_delay(key, 5.0)
     state.record_link_delay(key, 6.0)
     assert state.recent_delays(key) == [5.0, 6.0]
 
-    state.set_link_status(key, up=False)
-    assert state.get_link_status(key).up is False
+
+def test_link_status_keyed_by_dpid_port_not_directed_link_key():
+    state = NetworkState()
+    state.set_link_status(1, 1, up=False)
+    assert state.get_link_status(1, 1).up is False
+    assert state.get_link_status(2, 5).up is True  # untouched port defaults to up
+
+
+def test_is_edge_up_true_by_default():
+    state = NetworkState()
+    state.sync_graph([1, 2], [(1, 2, {"ports": {1: 1, 2: 5}})])
+    assert state.is_edge_up(1, 2) is True
+
+
+def test_is_edge_up_false_when_either_side_marked_down():
+    state = NetworkState()
+    state.sync_graph([1, 2], [(1, 2, {"ports": {1: 1, 2: 5}})])
+
+    state.set_link_status(1, 1, up=False)  # only side 1's port marked down
+    assert state.is_edge_up(1, 2) is False
+
+    state.set_link_status(1, 1, up=True)
+    state.set_link_status(2, 5, up=False)  # only side 2's port marked down
+    assert state.is_edge_up(1, 2) is False
+
+
+def test_port_towards():
+    state = NetworkState()
+    state.sync_graph([1, 2], [(1, 2, {"ports": {1: 1, 2: 5}})])
+    assert state.port_towards(1, 2) == 1
+    assert state.port_towards(2, 1) == 5
+    assert state.port_towards(1, 99) is None

@@ -30,7 +30,7 @@ from controller.injection_validation import (
     parse_congestion_request,
     parse_link_target,
 )
-from controller.network_state import LinkKey, NetworkState
+from controller.network_state import NetworkState
 
 
 def apply_congestion(iface: str, delay_ms: float, loss_pct: float, bw_kbit=None) -> None:
@@ -79,7 +79,7 @@ class InjectionController(ControllerBase):
             return self._json_response(404, {"error": f"unknown dpid {dpid}"})
 
         self._set_port_down(datapath, port, down=True)
-        self.network_state.set_link_status(LinkKey(dpid, port, 0), up=False)
+        self.network_state.set_link_status(dpid, port, up=False)
         return self._json_response(200, {"status": "failure injected", "dpid": dpid, "port": port})
 
     @route("injection", "/inject/recover", methods=["POST"])
@@ -94,7 +94,7 @@ class InjectionController(ControllerBase):
             return self._json_response(404, {"error": f"unknown dpid {dpid}"})
 
         self._set_port_down(datapath, port, down=False)
-        self.network_state.set_link_status(LinkKey(dpid, port, 0), up=True)
+        self.network_state.set_link_status(dpid, port, up=True)
         return self._json_response(200, {"status": "link recovered", "dpid": dpid, "port": port})
 
     @route("injection", "/inject/congestion", methods=["POST"])
@@ -110,7 +110,7 @@ class InjectionController(ControllerBase):
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
             return self._json_response(500, {"error": f"tc command failed: {exc}"})
 
-        self.network_state.set_link_status(LinkKey(dpid, port, 0), congestion_injected=True)
+        self.network_state.set_link_status(dpid, port, congestion_injected=True)
         return self._json_response(
             200, {"status": "congestion injected", "iface": iface, "delay_ms": delay_ms, "loss_pct": loss_pct}
         )

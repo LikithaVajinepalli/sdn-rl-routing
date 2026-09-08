@@ -71,6 +71,15 @@ def one_way_delay_ms(round_trip_ms: float) -> float:
     return max(0.0, round_trip_ms) / 2.0
 
 
+def fallback_delay_ms(src_echo_rtt_ms: float, dst_echo_rtt_ms: float) -> float:
+    """Used only when no probe sample has completed yet for a link: a rough
+    proxy from control-channel RTTs alone. Pure (unlike
+    controller/latency_probe.py, which needs Ryu to actually send probes) so
+    NetworkState.live_link_metrics() can call it without pulling Ryu into
+    every framework-free module that touches live link state."""
+    return one_way_delay_ms(src_echo_rtt_ms) + one_way_delay_ms(dst_echo_rtt_ms)
+
+
 def delay_jitter_ms(recent_delays_ms: Iterable[float]) -> float:
     """Population stdev of recent one-way delay samples - a stability signal
     feeding into link_trust_level."""

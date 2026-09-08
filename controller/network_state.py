@@ -30,8 +30,19 @@ class LinkKey:
 
 @dataclass
 class LinkStatus:
-    """Operational status of a link, mutated by the injection API and read by
-    the fallback logic in later phases (never trust a path over a down link)."""
+    """Operational status of one switch port, mutated by the injection API
+    and the port-status handler, read by routing/decision_engine.py's
+    fallback logic (never trust a path over a down link).
+
+    Keyed by plain (dpid, port_no) - not the directed LinkKey used for delay
+    tracking below. A physical link's up/down state isn't inherently
+    directional, and both natural sources of a status change only know one
+    side's (dpid, port) at the time: the injection API gets them straight
+    from the REST call, and an EventOFPPortStatus is scoped to one switch.
+    Keying by LinkKey here would need guessing the neighbour dpid at write
+    time, which - before this fix - injection_api.py did by hardcoding a
+    fake dst_dpid=0, silently never matching any real lookup. See
+    is_edge_up() for how both sides get checked when it matters."""
 
     up: bool = True
     congestion_injected: bool = False
@@ -63,7 +74,7 @@ class NetworkState:
         self.link_delay_history_ms: Dict[LinkKey, Deque[float]] = defaultdict(
             lambda: deque(maxlen=DELAY_HISTORY_LEN)
         )
-        self.link_status: Dict[LinkKey, LinkStatus] = defaultdict(LinkStatus)
+        self.link_status: Dict[Tuple[int, int], LinkStatus] = defaultdict(LinkStatus)
         self.last_updated: float = time.time()
 
     def record_port_sample(self, dpid: int, port_no: int, sample: PortSample) -> None:
@@ -99,15 +110,29 @@ class NetworkState:
         with self._lock:
             return list(self.link_delay_history_ms.get(key, ()))
 
-    def set_link_status(self, key: LinkKey, **changes) -> None:
+    def set_link_status(self, dpid: int, port_no: int, **changes) -> None:
         with self._lock:
-            status = self.link_status[key]
+            status = self.link_status[(dpid, port_no)]
             for field_name, value in changes.items():
                 setattr(status, field_name, value)
 
-    def get_link_status(self, key: LinkKey) -> LinkStatus:
+    def get_link_status(self, dpid: int, port_no: int) -> LinkStatus:
         with self._lock:
-            return self.link_status[key]
+            return self.link_status[(dpid, port_no)]
+
+    def is_edge_up(self, dpid_a: int, dpid_b: int) -> bool:
+        """An undirected edge is up only if *neither* side's port has been
+        marked down - a link failure reported from either end is enough to
+        distrust the whole edge, since we may not know which side actually
+        detected it first."""
+        with self._lock:
+            port_a = self._port_towards_locked(dpid_a, dpid_b)
+            port_b = self._port_towards_locked(dpid_b, dpid_a)
+            if port_a is not None and not self.link_status[(dpid_a, port_a)].up:
+                return False
+            if port_b is not None and not self.link_status[(dpid_b, port_b)].up:
+                return False
+            return True
 
     def switch_port_rates_bps(self, dpid: int, ports: List[int]) -> List[float]:
         from controller.metrics import throughput_bps
@@ -148,6 +173,44 @@ class NetworkState:
     def neighbour_dpid(self, dpid: int, port_no: int) -> Optional[int]:
         with self._lock:
             return self._neighbour_dpid_locked(dpid, port_no)
+
+    def _port_towards_locked(self, dpid: int, neighbour_dpid: int) -> Optional[int]:
+        for u, v, data in self.graph.edges(data=True):
+            if {u, v} == {dpid, neighbour_dpid}:
+                return data.get("ports", {}).get(dpid)
+        return None
+
+    def port_towards(self, dpid: int, neighbour_dpid: int) -> Optional[int]:
+        """The local port on `dpid` that connects toward `neighbour_dpid`,
+        per the currently discovered topology."""
+        with self._lock:
+            return self._port_towards_locked(dpid, neighbour_dpid)
+
+    def live_link_metrics(self, dpid: int, port_no: int, default_bw_mbps: float):
+        """Composes a live controller.metrics.LinkMetrics for one switch
+        port from current poll/probe data - the single place both the
+        Phase 1 metrics table and Phase 3's routing decisions read live
+        per-link state from, so they can never disagree."""
+        from controller.metrics import compute_link_metrics, fallback_delay_ms
+
+        pair = self.port_sample_pair(dpid, port_no)
+        if pair is None:
+            return None
+        prev, curr = pair
+        bw = self.link_bw_mbps(dpid, port_no, default_bw_mbps)
+        neighbour = self.neighbour_dpid(dpid, port_no)
+        key = LinkKey(dpid, port_no, neighbour or 0)
+        recent_delays = self.recent_delays(key)
+        if recent_delays:
+            delay_ms = recent_delays[-1]
+        else:
+            with self._lock:
+                src_rtt = self.echo_rtt_ms.get(dpid, 0.0)
+                dst_rtt = self.echo_rtt_ms.get(neighbour, 0.0) if neighbour else 0.0
+            delay_ms = fallback_delay_ms(src_rtt, dst_rtt)
+        switch_ports = [p for (d, p) in self.port_samples if d == dpid]
+        switch_rates = self.switch_port_rates_bps(dpid, switch_ports)
+        return compute_link_metrics(prev, curr, bw, delay_ms, recent_delays, switch_rates)
 
     def flood_ports(self, dpid: int, in_port: int) -> Set[int]:
         """Ports safe to flood out of: every host-facing port (one with no

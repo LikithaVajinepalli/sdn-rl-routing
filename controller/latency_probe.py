@@ -108,11 +108,3 @@ def estimate_link_delay_ms(
     elapsed_ms = (controller_recv_time - controller_send_time) * 1000.0
     overhead_ms = (src_echo_rtt_ms / 2.0) + (dst_echo_rtt_ms / 2.0)
     return max(0.0, elapsed_ms - overhead_ms)
-
-
-def fallback_delay_ms(src_echo_rtt_ms: float, dst_echo_rtt_ms: float) -> float:
-    """Used only when no probe sample has completed yet for a link: a rough
-    proxy from control-channel RTTs alone (see metrics.one_way_delay_ms)."""
-    from controller.metrics import one_way_delay_ms
-
-    return one_way_delay_ms(src_echo_rtt_ms) + one_way_delay_ms(dst_echo_rtt_ms)

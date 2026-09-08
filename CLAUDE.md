@@ -145,8 +145,35 @@ by lowering gamma to 0.3, empirically swept). Trained model:
 models/q_agent.pkl; training log/plot: models/training_log.csv,
 models/reward_curve.png.
 
-Not yet started: Phase 3 (routing/flow mgmt — main_app.py's packet-in
-handler is currently just a minimal learning switch, a stand-in; needs to
-wire rl/q_agent.py's decisions into real flow installation + Dijkstra
-fallback), Phase 4 (dashboard), Phase 5 (security hardening — injection API
-has no auth yet), Phase 6 (remaining docs: srs-traceability.md).
+**Phase 3 (routing & flow management) implemented, not yet manually
+verified in WSL2.** `controller/main_app.py`'s packet-in handler now routes
+known unicast host pairs via `routing/decision_engine.py` (RL or Dijkstra,
+selectable with `--routing-mode`), installing real bidirectional OpenFlow
+flow rules (`routing/flow_installer.py` + `controller/flow_manager.py`);
+Phase 1's flood fallback still handles broadcast/multicast and
+not-yet-located destinations. A new `EventOFPPortStatus` handler detects
+link failure near-instantly and reroutes affected flows
+(`routing/flow_registry.py` tracks which flows use which links) - NFR1/NFR3.
+Any RL agent failure (exception, or a chosen path using a down link)
+automatically falls back to Dijkstra, logged. Scoping decision locked in:
+failure-triggered rerouting only for Phase 3, not proactive
+congestion-based rerouting of already-installed flows (new flows still
+avoid known congestion since the RL agent sees live state when deciding) -
+see docs/architecture.md's Phase 3 section for the full design and the
+rationale.
+
+Found and fixed a real dormant bug while building this (not caught by any
+Phase 1/2 test, since nothing had ever *read* link status before): link
+up/down tracking was keyed asymmetrically and injection_api.py was writing
+it with a fake placeholder neighbour dpid that could never match a real
+lookup - see CHANGELOG.md for the fix (NetworkState.is_edge_up, re-keyed by
+plain (dpid, port_no)).
+
+133 unit tests pass total (34 new, all pure Python - the routing/ modules
+take NetworkState/graphs/fake agents as plain data, no live OpenFlow
+connection needed to test the decision logic, flow installation math, or
+the RL-failure/down-link fallback paths).
+
+Not yet started: Phase 4 (dashboard), Phase 5 (security hardening —
+injection API has no auth yet), Phase 6 (remaining docs:
+srs-traceability.md).
