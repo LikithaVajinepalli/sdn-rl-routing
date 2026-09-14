@@ -145,8 +145,8 @@ by lowering gamma to 0.3, empirically swept). Trained model:
 models/q_agent.pkl; training log/plot: models/training_log.csv,
 models/reward_curve.png.
 
-**Phase 3 (routing & flow management) implemented, not yet manually
-verified in WSL2.** `controller/main_app.py`'s packet-in handler now routes
+**Phase 3 (routing & flow management) implemented and manually verified
+working in WSL2.** `controller/main_app.py`'s packet-in handler now routes
 known unicast host pairs via `routing/decision_engine.py` (RL or Dijkstra,
 selectable with `--routing-mode`), installing real bidirectional OpenFlow
 flow rules (`routing/flow_installer.py` + `controller/flow_manager.py`);
@@ -169,10 +169,27 @@ it with a fake placeholder neighbour dpid that could never match a real
 lookup - see CHANGELOG.md for the fix (NetworkState.is_edge_up, re-keyed by
 plain (dpid, port_no)).
 
-133 unit tests pass total (34 new, all pure Python - the routing/ modules
-take NetworkState/graphs/fake agents as plain data, no live OpenFlow
-connection needed to test the decision logic, flow installation math, or
-the RL-failure/down-link fallback paths).
+137 unit tests pass total (all pure Python - the routing/ modules take
+NetworkState/graphs/fake agents as plain data, no live OpenFlow connection
+needed to test the decision logic, flow installation math, or the
+RL-failure/down-link fallback paths).
+
+Manual WSL2 verification results: `pingall` 0% dropped (240/240) via real
+flow installation; `ovs-ofctl dump-flows` confirms per-(src,dst)-MAC rules
+with correct per-hop output ports; failure injection on dpid=1 port=3
+produced `link dpid=1 port=3 (-> dpid=8) went down - rerouting affected
+flows` then `rerouted ... onto [5, 6, 1] (mode=rl)` - the RL agent choosing
+the replacement path live (FR3, NFR1, NFR3). **Phase 3 is complete.**
+
+Two real bugs surfaced only by this live testing, both now fixed (details
+in CHANGELOG.md): failure injection had been a silent no-op since Phase 1
+(OFPPortMod needs the port's real hw_addr, which was hardcoded to zeros and
+therefore rejected by OVS without any visible error), and a race where a
+link going down removes it from the discovered graph before the port-down
+handler can look up which neighbour it led to, silently skipping the
+reroute. Lesson worth keeping: a test whose success criterion passes
+trivially whether or not the mechanism works (Phase 1's "connectivity
+survives failure") is not evidence the mechanism works.
 
 Not yet started: Phase 4 (dashboard), Phase 5 (security hardening —
 injection API has no auth yet), Phase 6 (remaining docs:

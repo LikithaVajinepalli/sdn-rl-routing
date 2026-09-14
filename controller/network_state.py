@@ -71,6 +71,20 @@ class NetworkState:
         )
         self.echo_rtt_ms: Dict[int, float] = {}
         self.port_speed_mbps: Dict[Tuple[int, int], float] = {}
+        # (dpid, port) -> the neighbour dpid that port led to, the last time
+        # discovery saw the link. Deliberately never cleared on resync: when
+        # a link goes down, ryu.topology drops it from the live graph, so
+        # neighbour_dpid() starts returning None for exactly the link a
+        # port-down event is asking about - a race that silently skips
+        # rerouting. See main_app._port_status_handler.
+        self.last_known_neighbour: Dict[Tuple[int, int], int] = {}
+        # A port's real MAC, straight from the switch's port description.
+        # OFPPortMod requires the caller to echo the port's actual hw_addr -
+        # OVS silently rejects a port-mod carrying the wrong one (no config
+        # change, no port-status event, and no error we'd see), which is
+        # exactly how failure injection appeared to "succeed" while doing
+        # nothing at all. See controller/injection_api.py's _set_port_down.
+        self.port_hw_addr: Dict[Tuple[int, int], str] = {}
         self.link_delay_history_ms: Dict[LinkKey, Deque[float]] = defaultdict(
             lambda: deque(maxlen=DELAY_HISTORY_LEN)
         )
@@ -97,6 +111,15 @@ class NetworkState:
         with self._lock:
             if speed_mbps > 0:
                 self.port_speed_mbps[(dpid, port_no)] = speed_mbps
+
+    def record_port_hw_addr(self, dpid: int, port_no: int, hw_addr: str) -> None:
+        with self._lock:
+            if hw_addr:
+                self.port_hw_addr[(dpid, port_no)] = hw_addr
+
+    def get_port_hw_addr(self, dpid: int, port_no: int) -> Optional[str]:
+        with self._lock:
+            return self.port_hw_addr.get((dpid, port_no))
 
     def link_bw_mbps(self, dpid: int, port_no: int, default_mbps: float) -> float:
         with self._lock:
@@ -158,6 +181,12 @@ class NetworkState:
             if self.graph.number_of_nodes() > 0:
                 tree = nx.minimum_spanning_tree(self.graph)
                 self.tree_edges = {frozenset(e) for e in tree.edges()}
+            for u, v, data in self.graph.edges(data=True):
+                ports = data.get("ports", {})
+                if ports.get(u) is not None:
+                    self.last_known_neighbour[(u, ports[u])] = v
+                if ports.get(v) is not None:
+                    self.last_known_neighbour[(v, ports[v])] = u
 
     def record_switch_port(self, dpid: int, port_no: int) -> None:
         with self._lock:
@@ -173,6 +202,17 @@ class NetworkState:
     def neighbour_dpid(self, dpid: int, port_no: int) -> Optional[int]:
         with self._lock:
             return self._neighbour_dpid_locked(dpid, port_no)
+
+    def neighbour_dpid_ever(self, dpid: int, port_no: int) -> Optional[int]:
+        """Like neighbour_dpid(), but falls back to the last neighbour this
+        port was ever seen connected to. Use this when reacting to a link
+        going DOWN - by then discovery has usually already removed the dead
+        link from the live graph, so the live lookup returns None."""
+        with self._lock:
+            live = self._neighbour_dpid_locked(dpid, port_no)
+            if live is not None:
+                return live
+            return self.last_known_neighbour.get((dpid, port_no))
 
     def _port_towards_locked(self, dpid: int, neighbour_dpid: int) -> Optional[int]:
         for u, v, data in self.graph.edges(data=True):

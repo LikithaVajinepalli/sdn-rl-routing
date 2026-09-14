@@ -150,7 +150,11 @@ class SDNControllerApp(app_manager.RyuApp):
         port_no = msg.desc.port_no
         is_down = bool(msg.desc.state & ofproto.OFPPS_LINK_DOWN) or bool(msg.desc.config & ofproto.OFPPC_PORT_DOWN)
 
-        neighbour = self.network_state.neighbour_dpid(dpid, port_no)
+        # neighbour_dpid_ever, not neighbour_dpid: by the time a port-down
+        # event reaches us, discovery has often already removed the dead link
+        # from the live graph, so the live lookup returns None for exactly
+        # the link we need to reroute around.
+        neighbour = self.network_state.neighbour_dpid_ever(dpid, port_no)
         if neighbour is None:
             return  # host-facing port - not a link we route traffic over
 
@@ -195,6 +199,7 @@ class SDNControllerApp(app_manager.RyuApp):
             self.network_state.record_switch_port(dpid, port.port_no)
             speed_mbps = (port.curr_speed or 0) / 1000.0
             self.network_state.record_port_speed(dpid, port.port_no, speed_mbps)
+            self.network_state.record_port_hw_addr(dpid, port.port_no, port.hw_addr)
 
     @set_ev_cls(ofp_event.EventOFPEchoReply, MAIN_DISPATCHER)
     def _echo_reply_handler(self, ev):

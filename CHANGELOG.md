@@ -3,6 +3,40 @@
 All notable changes to this project are logged here, one phase/feature per
 entry, newest first.
 
+## [Unreleased] — Phase 3 fixes found during manual WSL2 testing
+
+### Fixed
+- **Failure injection never actually did anything.** `injection_api.py`'s
+  `_set_port_down` hardcoded `hw_addr="00:00:00:00:00:00"` in its
+  `OFPPortMod`. OpenFlow requires that field to match the port's *real*
+  hardware address; OVS silently rejects a mismatched port-mod, so no config
+  change was applied, no `OFPPortStatus` event was emitted, and the REST call
+  still returned 200. Every "failure injected" result since Phase 1 was a
+  no-op - which is also why Phase 1's `pingall`-survives-failure check passed
+  so easily (connectivity survives trivially when the link never went down).
+  `NetworkState` now records each port's real `hw_addr` from the port
+  description the switch already sends, and the endpoints return 409 instead
+  of falsely reporting success when it isn't known yet.
+- **Race that could silently skip rerouting.** When a link goes down,
+  `ryu.topology` removes it from the discovered graph, so
+  `neighbour_dpid()` returns `None` for exactly the link a port-down event
+  is about - making `_port_status_handler` return early without rerouting.
+  Added `NetworkState.neighbour_dpid_ever()`, backed by a persistent
+  `last_known_neighbour` map that survives graph resyncs, and switched the
+  handler to it. Caught from real logs: the first port-down event for the
+  failed link hit the `None` path and skipped the reroute; only a later
+  duplicate event happened to arrive before the resync and worked.
+
+### Verified working end-to-end in WSL2 after these fixes
+- `pingall`: 0% dropped (240/240) across the 8-switch/16-host topology, now
+  routed by real RL/Dijkstra flow installation rather than Phase 1's flood.
+- `ovs-ofctl dump-flows` confirms per-(src,dst)-MAC flow rules with correct
+  per-hop output ports, priority 10 above the table-miss entry.
+- Failure-triggered rerouting: forcing `dpid=1 port=3` down produced
+  `link dpid=1 port=3 (-> dpid=8) went down - rerouting affected flows` and
+  `rerouted 00:00:00:00:00:09 <-> 00:00:00:00:00:01 onto [5, 6, 1] (mode=rl)`
+  - the RL agent picking the replacement path (FR3, NFR1, NFR3).
+
 ## [Unreleased] — Phase 3: Routing & Flow Management
 
 ### Added

@@ -55,12 +55,27 @@ class InjectionController(ControllerBase):
             raise ValidationError("request body must be valid JSON")
 
     def _set_port_down(self, datapath, port_no: int, down: bool) -> None:
+        """Raises ValidationError if the port's real hw_addr isn't known yet.
+
+        OFPPortMod's hw_addr must match the port's ACTUAL hardware address:
+        OVS rejects a port-mod carrying the wrong one, and the rejection is
+        invisible from here (no config change, no port-status event, and the
+        error reply goes to a handler we don't have). Hardcoding zeros here
+        is what made failure injection silently do nothing while still
+        reporting success - see NetworkState.port_hw_addr."""
+        hw_addr = self.network_state.get_port_hw_addr(datapath.id, port_no)
+        if hw_addr is None:
+            raise ValidationError(
+                f"no known hw_addr for dpid {datapath.id} port {port_no} - "
+                "port descriptions may not have been collected yet"
+            )
+
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         port_mod = parser.OFPPortMod(
             datapath=datapath,
             port_no=port_no,
-            hw_addr="00:00:00:00:00:00",
+            hw_addr=hw_addr,
             config=ofproto.OFPPC_PORT_DOWN if down else 0,
             mask=ofproto.OFPPC_PORT_DOWN,
             advertise=0,
@@ -78,7 +93,10 @@ class InjectionController(ControllerBase):
         if datapath is None:
             return self._json_response(404, {"error": f"unknown dpid {dpid}"})
 
-        self._set_port_down(datapath, port, down=True)
+        try:
+            self._set_port_down(datapath, port, down=True)
+        except ValidationError as exc:
+            return self._json_response(409, {"error": str(exc)})
         self.network_state.set_link_status(dpid, port, up=False)
         return self._json_response(200, {"status": "failure injected", "dpid": dpid, "port": port})
 
@@ -93,7 +111,10 @@ class InjectionController(ControllerBase):
         if datapath is None:
             return self._json_response(404, {"error": f"unknown dpid {dpid}"})
 
-        self._set_port_down(datapath, port, down=False)
+        try:
+            self._set_port_down(datapath, port, down=False)
+        except ValidationError as exc:
+            return self._json_response(409, {"error": str(exc)})
         self.network_state.set_link_status(dpid, port, up=True)
         return self._json_response(200, {"status": "link recovered", "dpid": dpid, "port": port})
 

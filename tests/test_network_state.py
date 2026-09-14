@@ -111,6 +111,42 @@ def test_is_edge_up_false_when_either_side_marked_down():
     assert state.is_edge_up(1, 2) is False
 
 
+def test_neighbour_dpid_ever_survives_link_removal():
+    """A port-down event usually arrives after discovery already dropped the
+    dead link from the graph - the live lookup goes None, but we still need
+    to know which neighbour it led to in order to reroute around it."""
+    state = NetworkState()
+    state.sync_graph([1, 2], [(1, 2, {"ports": {1: 3, 2: 5}})])
+    assert state.neighbour_dpid(1, 3) == 2
+    assert state.neighbour_dpid_ever(1, 3) == 2
+
+    state.sync_graph([1, 2], [])  # link dies, discovery removes it
+    assert state.neighbour_dpid(1, 3) is None       # live view forgets it...
+    assert state.neighbour_dpid_ever(1, 3) == 2     # ...but we still remember
+
+
+def test_neighbour_dpid_ever_none_for_never_seen_port():
+    state = NetworkState()
+    state.sync_graph([1, 2], [(1, 2, {"ports": {1: 3, 2: 5}})])
+    assert state.neighbour_dpid_ever(1, 99) is None  # a host port, never a link
+
+
+def test_port_hw_addr_roundtrip():
+    """OFPPortMod needs a port's real hw_addr - hardcoding zeros made OVS
+    silently reject failure injection (see injection_api._set_port_down)."""
+    state = NetworkState()
+    assert state.get_port_hw_addr(1, 3) is None  # unknown until a port desc arrives
+
+    state.record_port_hw_addr(1, 3, "aa:bb:cc:dd:ee:ff")
+    assert state.get_port_hw_addr(1, 3) == "aa:bb:cc:dd:ee:ff"
+
+
+def test_port_hw_addr_ignores_empty():
+    state = NetworkState()
+    state.record_port_hw_addr(1, 3, "")
+    assert state.get_port_hw_addr(1, 3) is None
+
+
 def test_port_towards():
     state = NetworkState()
     state.sync_graph([1, 2], [(1, 2, {"ports": {1: 1, 2: 5}})])
