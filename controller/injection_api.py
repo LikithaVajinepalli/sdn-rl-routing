@@ -29,12 +29,34 @@ from controller.injection_validation import (
     iface_name,
     parse_congestion_request,
     parse_link_target,
+    parse_netem_qdisc,
 )
 from controller.network_state import NetworkState
 
 
 def apply_congestion(iface: str, delay_ms: float, loss_pct: float, bw_kbit=None) -> None:
-    subprocess.run(build_netem_command(iface, delay_ms, loss_pct, bw_kbit), check=True, timeout=5)
+    """Applies tc-netem congestion to a Mininet veth.
+
+    Two things make this fragile, both learned the hard way:
+      * `tc` needs root, and the controller is normally run as a plain user
+        (only Mininet needs sudo) - so this endpoint only works when
+        ryu-manager itself was started with sudo. The caller surfaces that
+        rather than returning a bare 500.
+      * TCLink puts HTB at the root for bandwidth with netem as a CHILD, so
+        the netem qdisc has to be targeted by its own handle/parent -
+        `tc qdisc change ... root netem` edits the wrong qdisc and fails.
+    scripts/benchmark.py deliberately bypasses this endpoint and drives tc
+    through Mininet instead, where it already has root."""
+    show = subprocess.run(
+        ["tc", "qdisc", "show", "dev", iface], check=True, timeout=5, stdout=subprocess.PIPE
+    ).stdout.decode()
+    netem = parse_netem_qdisc(show)
+    handle, parent = netem if netem else (None, None)
+    subprocess.run(
+        build_netem_command(iface, delay_ms, loss_pct, bw_kbit, handle=handle, parent=parent),
+        check=True,
+        timeout=5,
+    )
 
 
 class InjectionController(ControllerBase):
@@ -129,7 +151,17 @@ class InjectionController(ControllerBase):
         try:
             apply_congestion(iface, delay_ms, loss_pct, bw_kbit)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
-            return self._json_response(500, {"error": f"tc command failed: {exc}"})
+            return self._json_response(
+                500,
+                {
+                    "error": f"tc command failed: {exc}",
+                    "hint": (
+                        "congestion injection shells out to `tc`, which needs root - this only works "
+                        "if ryu-manager itself was started with sudo. scripts/benchmark.py applies "
+                        "congestion through Mininet instead, where it already has root."
+                    ),
+                },
+            )
 
         self.network_state.set_link_status(dpid, port, congestion_injected=True)
         return self._json_response(

@@ -59,14 +59,56 @@ def parse_congestion_request(payload: dict) -> Tuple[int, int, float, float, Opt
     return dpid, port, delay_ms, loss_pct, bw_kbit
 
 
-def build_netem_command(iface: str, delay_ms: float, loss_pct: float, bw_kbit: Optional[float] = None) -> List[str]:
+def parse_netem_qdisc(tc_show_output: str) -> Optional[Tuple[str, Optional[str]]]:
+    """Finds the netem qdisc's (handle, parent) in `tc qdisc show dev X`.
+
+    Mininet's TCLink builds a hierarchy - HTB at the root to enforce
+    bandwidth, with netem hanging off it for delay/loss - so a naive
+    `tc qdisc change dev X root netem ...` targets the wrong qdisc and
+    fails. Returns None when the interface has no netem qdisc at all.
+
+    Example line:  qdisc netem 10: parent 5:1 limit 1000 delay 5.0ms
+    """
+    for line in tc_show_output.splitlines():
+        parts = line.split()
+        if len(parts) < 3 or parts[0] != "qdisc" or parts[1] != "netem":
+            continue
+        handle = parts[2]
+        if "parent" in parts:
+            return handle, parts[parts.index("parent") + 1]
+        if "root" in parts:
+            return handle, None
+        return handle, None
+    return None
+
+
+def build_netem_command(
+    iface: str,
+    delay_ms: float,
+    loss_pct: float,
+    bw_kbit: Optional[float] = None,
+    handle: Optional[str] = None,
+    parent: Optional[str] = None,
+) -> List[str]:
     """Builds an argv list (never a shell string) for `tc qdisc change`, so
-    this is safe to pass to subprocess without shell=True."""
-    cmd = ["tc", "qdisc", "change", "dev", iface, "root", "netem", "delay", f"{delay_ms}ms", "loss", f"{loss_pct}%"]
+    this is safe to pass to subprocess without shell=True.
+
+    Pass handle/parent from parse_netem_qdisc() to target the netem qdisc
+    where it actually sits; without them this falls back to assuming netem
+    is the root qdisc, which is only true on links built without bandwidth
+    limiting."""
+    cmd = ["tc", "qdisc", "change", "dev", iface]
+    if parent:
+        cmd += ["parent", parent]
+    else:
+        cmd += ["root"]
+    if handle:
+        cmd += ["handle", handle]
+    cmd += ["netem", "delay", f"{delay_ms}ms", "loss", f"{loss_pct}%"]
     if bw_kbit is not None:
         cmd += ["rate", f"{bw_kbit}kbit"]
     return cmd
 
 
-def build_clear_netem_command(iface: str) -> List[str]:
-    return build_netem_command(iface, delay_ms=0.0, loss_pct=0.0)
+def build_clear_netem_command(iface: str, handle: Optional[str] = None, parent: Optional[str] = None) -> List[str]:
+    return build_netem_command(iface, delay_ms=0.0, loss_pct=0.0, handle=handle, parent=parent)

@@ -7,6 +7,7 @@ from controller.injection_validation import (
     iface_name,
     parse_congestion_request,
     parse_link_target,
+    parse_netem_qdisc,
 )
 
 
@@ -79,6 +80,55 @@ def test_build_netem_command_rejects_shell_metacharacters_in_iface():
     cmd = build_netem_command("s3-eth2; rm -rf /", 50.0, 5.0)
     assert "; rm -rf /" not in " ".join(cmd[:4])  # sanity: it's one argv element, not concatenated shell text
     assert cmd[4] == "s3-eth2; rm -rf /"  # passed through as a single argv token, never shell-interpreted
+
+
+TC_SHOW_TCLINK = """qdisc htb 5: root refcnt 2 r2q 10 default 0x1 direct_packets_stat 0 direct_qlen 1000
+qdisc netem 10: parent 5:1 limit 1000 delay 5.0ms
+"""
+
+TC_SHOW_NETEM_ROOT = "qdisc netem 8001: root refcnt 2 limit 1000 delay 5.0ms\n"
+
+TC_SHOW_NO_NETEM = """qdisc noqueue 0: root refcnt 2
+"""
+
+
+def test_parse_netem_qdisc_finds_child_of_htb():
+    """Mininet's TCLink puts HTB at the root for bandwidth with netem as a
+    child - targeting `root netem` edits the wrong qdisc and the command
+    fails, which is what broke congestion injection."""
+    assert parse_netem_qdisc(TC_SHOW_TCLINK) == ("10:", "5:1")
+
+
+def test_parse_netem_qdisc_handles_netem_at_root():
+    assert parse_netem_qdisc(TC_SHOW_NETEM_ROOT) == ("8001:", None)
+
+
+def test_parse_netem_qdisc_none_when_absent():
+    assert parse_netem_qdisc(TC_SHOW_NO_NETEM) is None
+    assert parse_netem_qdisc("") is None
+
+
+def test_build_netem_command_targets_parent_and_handle():
+    handle, parent = parse_netem_qdisc(TC_SHOW_TCLINK)
+    cmd = build_netem_command("s1-eth5", 80.0, 4.0, handle=handle, parent=parent)
+    assert cmd == [
+        "tc", "qdisc", "change", "dev", "s1-eth5",
+        "parent", "5:1", "handle", "10:",
+        "netem", "delay", "80.0ms", "loss", "4.0%",
+    ]
+
+
+def test_build_netem_command_falls_back_to_root_without_handle():
+    cmd = build_netem_command("s1-eth5", 80.0, 4.0)
+    assert cmd[:6] == ["tc", "qdisc", "change", "dev", "s1-eth5", "root"]
+    assert "handle" not in cmd
+
+
+def test_build_clear_netem_command_targets_the_same_qdisc():
+    handle, parent = parse_netem_qdisc(TC_SHOW_TCLINK)
+    cmd = build_clear_netem_command("s1-eth5", handle=handle, parent=parent)
+    assert "parent" in cmd and "5:1" in cmd and "10:" in cmd
+    assert "0.0ms" in cmd and "0.0%" in cmd
 
 
 def test_build_clear_netem_command_zeroes_delay_and_loss():

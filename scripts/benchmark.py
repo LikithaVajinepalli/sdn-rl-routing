@@ -31,6 +31,12 @@ from mininet.log import setLogLevel
 from mininet.net import Mininet
 from mininet.node import OVSSwitch, RemoteController
 
+from controller.injection_validation import (
+    build_clear_netem_command,
+    build_netem_command,
+    iface_name,
+    parse_netem_qdisc,
+)
 from scripts.benchmark_metrics import (
     find_route_port,
     parse_iperf_mbps,
@@ -94,25 +100,36 @@ def recover_link(rest_url: str, dpid: int, port: int) -> None:
     requests.post(f"{rest_url}/inject/recover", json={"dpid": dpid, "port": port}, timeout=5)
 
 
-def inject_congestion(rest_url: str, dpid: int, port: int, delay_ms: float, loss_pct: float) -> dict:
-    response = requests.post(
-        f"{rest_url}/inject/congestion",
-        json={"dpid": dpid, "port": port, "delay_ms": delay_ms, "loss_pct": loss_pct},
-        timeout=10,
-    )
-    response.raise_for_status()
-    return response.json()
+def apply_congestion(switch, iface: str, delay_ms: float, loss_pct: float):
+    """Applies tc-netem congestion directly through Mininet.
+
+    Deliberately NOT via the controller's /inject/congestion endpoint: that
+    shells out to `tc`, which needs root, and the controller is run as a
+    normal user (only Mininet needs sudo). This script already runs as root
+    with the switch in hand, so it can do it directly and reliably.
+
+    Also targets netem where it actually sits - TCLink puts HTB at the root
+    for bandwidth with netem as a child, so `... root netem` targets the
+    wrong qdisc."""
+    show = switch.cmd(f"tc qdisc show dev {iface}")
+    netem = parse_netem_qdisc(show)
+    if netem is None:
+        return False, f"no netem qdisc found on {iface}: {show.strip()}"
+
+    handle, parent = netem
+    command = " ".join(build_netem_command(iface, delay_ms, loss_pct, handle=handle, parent=parent))
+    output = switch.cmd(command).strip()
+    ok = "RTNETLINK" not in output and "Error" not in output and "Usage" not in output
+    return ok, output or command
 
 
-def clear_congestion(rest_url: str, dpid: int, port: int) -> None:
-    try:
-        requests.post(
-            f"{rest_url}/inject/congestion",
-            json={"dpid": dpid, "port": port, "delay_ms": 0.0, "loss_pct": 0.0},
-            timeout=10,
-        )
-    except requests.RequestException:
-        pass
+def clear_congestion(switch, iface: str) -> None:
+    show = switch.cmd(f"tc qdisc show dev {iface}")
+    netem = parse_netem_qdisc(show)
+    if netem is None:
+        return
+    handle, parent = netem
+    switch.cmd(" ".join(build_clear_netem_command(iface, handle=handle, parent=parent)))
 
 
 def find_baseline_link(net, args) -> Optional[int]:
@@ -230,27 +247,33 @@ def main():
             if congested_port is None:
                 print("! could not determine the baseline's link - running without congestion")
             else:
+                iface = iface_name(1, congested_port)
                 print(
-                    f"\ncongesting s1 port {congested_port} "
+                    f"\ncongesting {iface} "
                     f"(+{args.congest_delay_ms}ms, {args.congest_loss_pct}% loss) — the path Dijkstra picks"
                 )
-                inject_congestion(
-                    args.rest_url, 1, congested_port, args.congest_delay_ms, args.congest_loss_pct
+                ok, detail = apply_congestion(
+                    net.get("s1"), iface, args.congest_delay_ms, args.congest_loss_pct
                 )
-                results["congestion"] = {
-                    "dpid": 1,
-                    "port": congested_port,
-                    "delay_ms": args.congest_delay_ms,
-                    "loss_pct": args.congest_loss_pct,
-                }
-                print(f"waiting {args.settle_seconds}s for the controller's metrics to reflect it…")
-                time.sleep(args.settle_seconds)
+                if not ok:
+                    print(f"! congestion injection failed: {detail}")
+                    congested_port = None
+                else:
+                    results["congestion"] = {
+                        "dpid": 1,
+                        "port": congested_port,
+                        "iface": iface,
+                        "delay_ms": args.congest_delay_ms,
+                        "loss_pct": args.congest_loss_pct,
+                    }
+                    print(f"waiting {args.settle_seconds}s for the controller's metrics to reflect it…")
+                    time.sleep(args.settle_seconds)
 
         for mode in args.modes:
             results["modes"][mode] = run_mode(net, args, mode)
     finally:
         if congested_port is not None:
-            clear_congestion(args.rest_url, 1, congested_port)
+            clear_congestion(net.get("s1"), iface_name(1, congested_port))
         net.stop()
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
