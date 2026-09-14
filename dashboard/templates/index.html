@@ -129,8 +129,11 @@
   </div>
 </section>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<!-- Vendored, not CDN-loaded: the demo machine can't be assumed to have
+     internet, and a hanging CDN request leaves the page stuck on
+     "connecting…" with no data (exactly what happened in testing). -->
+<script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/socket.io.min.js') }}"></script>
 <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
 </body>
 </html>

@@ -227,6 +227,10 @@ const chartDefaults = {
 };
 
 async function loadRewardChart() {
+  if (typeof Chart === 'undefined') {
+    document.getElementById('curve-sub').textContent = 'chart library failed to load';
+    return;
+  }
   const response = await fetch('/api/training-curve');
   const data = await response.json();
   const points = data.points || [];
@@ -262,6 +266,10 @@ async function loadRewardChart() {
 }
 
 async function loadBenchmarkChart() {
+  if (typeof Chart === 'undefined') {
+    document.getElementById('benchmark-sub').textContent = 'chart library failed to load';
+    return;
+  }
   const response = await fetch('/api/benchmark');
   const data = await response.json();
   const sub = document.getElementById('benchmark-sub');
@@ -306,24 +314,57 @@ async function loadBenchmarkChart() {
 
 /* ---------- wiring ---------- */
 
-const socket = io();
-
-socket.on('connect', () => {
-  document.getElementById('conn-dot').className = 'dot live';
-  document.getElementById('conn-label').textContent = 'connected';
-});
-
-socket.on('disconnect', () => {
+function fatal(message) {
+  // A silent failure here looks identical to "no traffic yet", which cost
+  // real debugging time - so say it plainly on the page.
   document.getElementById('conn-dot').className = 'dot lost';
-  document.getElementById('conn-label').textContent = 'disconnected';
-});
+  document.getElementById('conn-label').textContent = message;
+  console.error(message);
+}
 
-socket.on('snapshot', (snapshot) => {
-  renderSummary(snapshot.summary);
-  renderTopology(snapshot.topology);
-  renderMetrics(snapshot.metrics);
-  renderDecisions(snapshot.decisions);
-});
+if (typeof io === 'undefined') {
+  fatal('socket.io failed to load — live updates unavailable');
+} else {
+  const socket = io();
+
+  socket.on('connect', () => {
+    document.getElementById('conn-dot').className = 'dot live';
+    document.getElementById('conn-label').textContent = 'connected';
+  });
+
+  socket.on('connect_error', (err) => {
+    fatal(`socket error: ${err && err.message ? err.message : 'connection failed'}`);
+  });
+
+  socket.on('disconnect', () => {
+    document.getElementById('conn-dot').className = 'dot lost';
+    document.getElementById('conn-label').textContent = 'disconnected';
+  });
+
+  socket.on('snapshot', (snapshot) => {
+    renderSummary(snapshot.summary);
+    renderTopology(snapshot.topology);
+    renderMetrics(snapshot.metrics);
+    renderDecisions(snapshot.decisions);
+  });
+}
+
+// Fall back to plain polling if the socket can't be used, so the dashboard
+// still shows live data (just less promptly) rather than nothing at all.
+setInterval(async () => {
+  const label = document.getElementById('conn-label').textContent;
+  if (label === 'connected') return;
+  try {
+    const snapshot = await (await fetch('/api/snapshot')).json();
+    renderSummary(snapshot.summary);
+    renderTopology(snapshot.topology);
+    renderMetrics(snapshot.metrics);
+    renderDecisions(snapshot.decisions);
+    document.getElementById('conn-label').textContent += ' (polling)';
+  } catch (err) {
+    /* controller down - leave the existing message in place */
+  }
+}, 3000);
 
 for (const button of document.querySelectorAll('.mode-toggle button')) {
   button.addEventListener('click', async () => {
