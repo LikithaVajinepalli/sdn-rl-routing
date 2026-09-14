@@ -30,7 +30,13 @@ from mininet.log import setLogLevel
 from mininet.net import Mininet
 from mininet.node import OVSSwitch, RemoteController
 
-from scripts.benchmark_metrics import parse_iperf_mbps, parse_ping, recovery_time_from_ping, summarise_mode
+from scripts.benchmark_metrics import (
+    find_route_port,
+    parse_iperf_mbps,
+    parse_ping,
+    recovery_time_from_ping,
+    summarise_mode,
+)
 from topology.config import LinkProfile, TopologyConfig
 from topology.ring_topology import RingChordTopo
 
@@ -69,17 +75,11 @@ def recover_link(rest_url: str, dpid: int, port: int) -> None:
     requests.post(f"{rest_url}/inject/recover", json={"dpid": dpid, "port": port}, timeout=5)
 
 
-def find_route_port(switch, src_mac: str, dst_mac: str):
-    """Which port the installed flow for src->dst actually uses - so the
-    failure we inject hits the link this traffic is really on, rather than
-    an unrelated one (a mistake that makes a reroute test silently vacuous)."""
+def dump_route_port(switch, src_mac: str, dst_mac: str):
+    """Asks the switch for its flow table and reads which port the src->dst
+    flow forwards out of (parsing lives in benchmark_metrics so it's tested)."""
     flows = switch.cmd(f"ovs-ofctl -O OpenFlow13 dump-flows {switch.name}")
-    for line in flows.splitlines():
-        if f"dl_src={src_mac}" in line and f"dl_dst={dst_mac}" in line:
-            marker = "actions=output:"
-            if marker in line:
-                return int(line.split(marker)[1].strip().strip('"').split(",")[0].strip('"'))
-    return None
+    return find_route_port(flows, src_mac, dst_mac)
 
 
 def run_mode(net, args, mode: str) -> dict:
@@ -108,7 +108,7 @@ def run_mode(net, args, mode: str) -> dict:
     dst.cmd("kill %iperf 2>/dev/null; pkill -f 'iperf -s' 2>/dev/null")
 
     print("  measuring failure recovery…")
-    route_port = find_route_port(edge_switch, src.MAC(), dst.MAC())
+    route_port = dump_route_port(edge_switch, src.MAC(), dst.MAC())
     recovery = None
     if route_port is None:
         print("  ! could not find the installed route's port - skipping the failure phase")

@@ -1,4 +1,6 @@
 from scripts.benchmark_metrics import (
+    find_route_port,
+    parse_flow_output_port,
     parse_iperf_mbps,
     parse_ping,
     ping_sequence_numbers,
@@ -72,6 +74,51 @@ def test_recovery_time_ignores_shorter_gaps():
 
 def test_recovery_time_none_without_sequences():
     assert recovery_time_from_ping("no pings here", interval_s=0.2) is None
+
+
+def test_parse_flow_output_port_bare_number():
+    assert parse_flow_output_port("priority=10,dl_src=aa,dl_dst=bb actions=output:3") == 3
+
+
+def test_parse_flow_output_port_quoted_interface_name():
+    """OVS prints the interface name rather than the port number whenever it
+    can resolve one - both forms show up against the same switch, and only
+    handling the number form crashed a real benchmark run."""
+    assert parse_flow_output_port('priority=10,dl_src=aa,dl_dst=bb actions=output:"s1-eth5"') == 5
+
+
+def test_parse_flow_output_port_unquoted_interface_name():
+    assert parse_flow_output_port("actions=output:s12-eth7") == 7
+
+
+def test_parse_flow_output_port_multi_digit_port():
+    assert parse_flow_output_port('actions=output:"s3-eth12"') == 12
+
+
+def test_parse_flow_output_port_none_without_output_action():
+    assert parse_flow_output_port("priority=0 actions=CONTROLLER:65535") is None
+    assert parse_flow_output_port("") is None
+
+
+FLOW_DUMP = """ cookie=0x0, duration=332.3s, table=0, priority=65535,dl_dst=01:80:c2:00:00:0e actions=CONTROLLER:65535
+ cookie=0x0, duration=616.2s, table=0, priority=10,dl_src=00:00:00:00:00:01,dl_dst=00:00:00:00:00:09 actions=output:"s1-eth5"
+ cookie=0x0, duration=616.2s, table=0, priority=10,dl_src=00:00:00:00:00:09,dl_dst=00:00:00:00:00:01 actions=output:"s1-eth1"
+ cookie=0x0, duration=332.3s, table=0, priority=0 actions=CONTROLLER:65535
+"""
+
+
+def test_find_route_port_matches_the_right_direction():
+    assert find_route_port(FLOW_DUMP, "00:00:00:00:00:01", "00:00:00:00:00:09") == 5
+    assert find_route_port(FLOW_DUMP, "00:00:00:00:00:09", "00:00:00:00:00:01") == 1
+
+
+def test_find_route_port_none_when_flow_absent():
+    assert find_route_port(FLOW_DUMP, "00:00:00:00:00:aa", "00:00:00:00:00:bb") is None
+
+
+def test_find_route_port_ignores_controller_flows():
+    dump = " cookie=0x0, table=0, priority=0 actions=CONTROLLER:65535\n"
+    assert find_route_port(dump, "aa", "bb") is None
 
 
 def test_summarise_mode_shape():

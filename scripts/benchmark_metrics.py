@@ -79,6 +79,45 @@ def recovery_time_from_ping(output: str, interval_s: float) -> Optional[float]:
     return round(longest_gap * interval_s, 3)
 
 
+def parse_flow_output_port(line: str) -> Optional[int]:
+    """Port number from an `ovs-ofctl dump-flows` action.
+
+    OVS writes the output action either as a bare port number
+    (`actions=output:3`) or as the interface NAME (`actions=output:"s1-eth5"`,
+    sometimes unquoted) depending on whether it can resolve the name - both
+    appear against the same switch. Mininet names ports `s<dpid>-eth<port>`,
+    so the trailing number after `-eth` is the port. Returns None when the
+    line carries no output action we can read."""
+    marker = "output:"
+    if marker not in line:
+        return None
+
+    value = line.split(marker, 1)[1].strip()
+    # Stop at whatever ends the action: another action, or trailing text.
+    value = value.split(",")[0].split()[0].strip().strip('"')
+
+    if value.isdigit():
+        return int(value)
+
+    match = re.search(r"-eth(\d+)$", value)
+    return int(match.group(1)) if match else None
+
+
+def find_route_port(flow_dump: str, src_mac: str, dst_mac: str) -> Optional[int]:
+    """Which port the installed src->dst flow actually forwards out of.
+
+    The benchmark needs this so the failure it injects hits the link the
+    traffic is really using - breaking an unrelated link makes a reroute
+    measurement silently vacuous (a mistake made by hand during Phase 3
+    testing, worth not repeating automatically)."""
+    for line in flow_dump.splitlines():
+        if f"dl_src={src_mac}" in line and f"dl_dst={dst_mac}" in line:
+            port = parse_flow_output_port(line)
+            if port is not None:
+                return port
+    return None
+
+
 def summarise_mode(ping_result: Dict, throughput_mbps: Optional[float], recovery_s: Optional[float]) -> Dict:
     return {
         "avg_latency_ms": ping_result.get("avg_latency_ms"),
