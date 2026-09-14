@@ -191,6 +191,30 @@ reroute. Lesson worth keeping: a test whose success criterion passes
 trivially whether or not the mechanism works (Phase 1's "connectivity
 survives failure") is not evidence the mechanism works.
 
-Not yet started: Phase 4 (dashboard), Phase 5 (security hardening —
-injection API has no auth yet), Phase 6 (remaining docs:
+**Phase 4 (dashboard) implemented, not yet manually verified in WSL2.**
+Decisions locked in: the dashboard runs **inside the Ryu process** (reads
+NetworkState directly, no polling REST client) and is served by
+`ryu-manager` on port 8081 — there is deliberately no separate
+`python dashboard.py`. Flask + Flask-SocketIO share Ryu's eventlet hub
+(`dashboard/server.py`), with graceful degradation if Flask is missing or
+the bind fails, so a broken dashboard can never take routing down.
+`routing/decision_log.py` records every decision with its candidate paths
+and their live state, which is what makes the decision feed explain *why* a
+path won. `controller/routing_api.py` adds runtime mode switching (flushing
+installed routes so each mode starts clean) — used by both the header toggle
+and the benchmark harness. `scripts/benchmark.py` runs the same scenario
+under each mode and records real measured latency/throughput/loss/recovery
+to JSON for the comparison view; `scripts/make_report_charts.py` produces
+static figures for the report. 174 unit tests pass; the Flask routes,
+snapshot payloads, decision log, and benchmark parsing are all covered
+without needing Mininet/Ryu.
+
+Local smoke test passed (Flask routes render, mode switch validates and
+applies, real training curve loads, report chart generated). **Still needs
+manual WSL2 verification**: that Flask-SocketIO actually coexists with Ryu's
+eventlet hub at runtime (the known-fiddly part of the in-process choice),
+that live updates reach the browser, and a real `scripts/benchmark.py` run.
+
+Not yet started: Phase 5 (security hardening — injection API, routing API
+and dashboard all have no auth yet), Phase 6 (remaining docs:
 srs-traceability.md).

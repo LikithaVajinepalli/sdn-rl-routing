@@ -10,8 +10,8 @@ without the Linux-only OpenFlow stack installed.
 """
 
 import logging
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
 
 from controller.network_state import NetworkState
 from rl.path_features import PathFeatures, aggregate_path_features
@@ -29,6 +29,11 @@ class RoutingDecision:
     path: List[int]                        # switch dpids, src -> dst
     mode_used: str                          # "rl" or "dijkstra" (fallback still reports "dijkstra")
     fallback_reason: Optional[str] = None   # set only when RL was asked for but couldn't be used
+    # Every candidate considered, with the live state observed for each -
+    # not used to route, but it's what makes the dashboard's decision feed
+    # explain *why* a path won (FR4's "reasoning/state snapshot").
+    candidates: List[List[int]] = field(default_factory=list)
+    candidate_features: List[PathFeatures] = field(default_factory=list)
 
 
 class RoutingDecisionEngine:
@@ -69,20 +74,49 @@ class RoutingDecisionEngine:
             logger.warning("no viable (up) path from dpid %s to dpid %s", src_dpid, dst_dpid)
             return None
 
+        # Features are gathered for every candidate in both modes: the RL
+        # agent needs them to choose, and the dashboard's decision feed uses
+        # them to explain the choice even under the Dijkstra baseline. A
+        # failure here is only fatal to the RL path - Dijkstra doesn't need
+        # them and must still route.
+        features, features_error = self._safe_path_features(candidates)
+
         if self.mode != "rl" or self.agent is None:
-            return self._dijkstra_decision(src_dpid, dst_dpid, candidates)
+            return self._dijkstra_decision(src_dpid, dst_dpid, candidates, features=features)
+
+        if features_error is not None:
+            logger.warning("could not read live link state (%s) - falling back to Dijkstra", features_error)
+            return self._dijkstra_decision(
+                src_dpid, dst_dpid, candidates, fallback_reason=features_error, features=features
+            )
 
         try:
-            return self._rl_decision(candidates)
+            action = self.agent.select_action(features)
+            return RoutingDecision(
+                path=candidates[action], mode_used="rl", candidates=candidates, candidate_features=features
+            )
         except Exception as exc:  # RL must never take the network down - fall back, log, move on
             logger.warning("RL decision failed (%s) - falling back to Dijkstra", exc)
-            return self._dijkstra_decision(src_dpid, dst_dpid, candidates, fallback_reason=str(exc))
+            return self._dijkstra_decision(
+                src_dpid, dst_dpid, candidates, fallback_reason=str(exc), features=features
+            )
+
+    def _safe_path_features(self, candidates: List[List[int]]) -> Tuple[List[PathFeatures], Optional[str]]:
+        try:
+            return [self._path_features(p) for p in candidates], None
+        except Exception as exc:
+            return [], str(exc)
 
     def _path_is_up(self, path: List[int]) -> bool:
         return all(self.network_state.is_edge_up(u, v) for u, v in path_edges(path))
 
     def _dijkstra_decision(
-        self, src_dpid: int, dst_dpid: int, candidates: List[List[int]], fallback_reason: Optional[str] = None
+        self,
+        src_dpid: int,
+        dst_dpid: int,
+        candidates: List[List[int]],
+        fallback_reason: Optional[str] = None,
+        features: Optional[List[PathFeatures]] = None,
     ) -> Optional[RoutingDecision]:
         path = shortest_path(self.network_state.graph, src_dpid, dst_dpid)
         if path is None or not self._path_is_up(path):
@@ -91,12 +125,13 @@ class RoutingDecisionEngine:
             path = candidates[0] if candidates else None
         if path is None:
             return None
-        return RoutingDecision(path=path, mode_used="dijkstra", fallback_reason=fallback_reason)
-
-    def _rl_decision(self, candidates: List[List[int]]) -> RoutingDecision:
-        features = [self._path_features(p) for p in candidates]
-        action = self.agent.select_action(features)
-        return RoutingDecision(path=candidates[action], mode_used="rl")
+        return RoutingDecision(
+            path=path,
+            mode_used="dijkstra",
+            fallback_reason=fallback_reason,
+            candidates=candidates,
+            candidate_features=features or [],
+        )
 
     def _path_features(self, path: List[int]) -> PathFeatures:
         return aggregate_path_features(self._live_link_metrics(u, v) for u, v in path_edges(path))

@@ -34,10 +34,12 @@ from ryu.ofproto import ofproto_v1_3
 from ryu.topology import event as topo_event
 from tabulate import tabulate
 
-from controller import injection_api, latency_probe, stats_poller, topo_discovery
+from controller import injection_api, latency_probe, routing_api, stats_poller, topo_discovery
 from controller.flow_manager import install_flows, remove_flows_for_hosts
 from controller.network_state import LinkKey, NetworkState
+from dashboard.server import start_dashboard
 from routing.decision_engine import RoutingDecisionEngine
+from routing.decision_log import DecisionLog, build_record
 from routing.flow_installer import build_bidirectional_flows
 from routing.flow_registry import ActiveFlowRegistry, FlowRecord
 from routing.host_location import HostLocationTracker
@@ -53,6 +55,7 @@ CONF.register_opts(
     [
         cfg.StrOpt("routing-mode", default="rl", help="Phase 3 routing strategy: 'rl' or 'dijkstra'"),
         cfg.StrOpt("rl-model-path", default=DEFAULT_MODEL_PATH, help="trained Q-agent pickle (rl/train.py's output)"),
+        cfg.IntOpt("dashboard-port", default=8081, help="Phase 4 dashboard port (0 disables the dashboard)"),
     ]
 )
 
@@ -84,7 +87,11 @@ class SDNControllerApp(app_manager.RyuApp):
         self._pending_probes: Dict[int, Tuple[int, int]] = {}
 
         self.routing_mode = CONF.routing_mode
-        agent = _load_agent(CONF.rl_model_path) if self.routing_mode == "rl" else None
+        self.decision_log = DecisionLog()
+        # Load the agent regardless of the starting mode: the mode can be
+        # switched at runtime (routing_api / the dashboard toggle), and
+        # loading it lazily on switch would stall the first decision after.
+        agent = _load_agent(CONF.rl_model_path)
         self.decision_engine = RoutingDecisionEngine(
             self.network_state, self.host_locations, agent=agent, mode=self.routing_mode
         )
@@ -95,10 +102,47 @@ class SDNControllerApp(app_manager.RyuApp):
             injection_api.InjectionController,
             {"network_state": self.network_state, "datapaths": self.datapaths},
         )
+        wsgi.register(
+            routing_api.RoutingController,
+            {
+                "get_mode": lambda: self.routing_mode,
+                "set_mode": self._set_routing_mode,
+                "flush_routes": self._flush_all_routes,
+            },
+        )
 
         self._poll_thread = hub.spawn(self._poll_loop)
         self._probe_thread = hub.spawn(self._probe_loop)
         self._print_thread = hub.spawn(self._print_loop)
+
+        if CONF.dashboard_port:
+            start_dashboard(
+                self.network_state,
+                self.decision_log,
+                self.flow_registry,
+                lambda: self.routing_mode,
+                hub,
+                routing_mode_setter=self._set_routing_mode,
+                flush_routes=self._flush_all_routes,
+                port=CONF.dashboard_port,
+                default_bw_mbps=DEFAULT_LINK_BW_MBPS,
+            )
+
+    # --- Routing mode control (FR4: same traffic under either strategy) ----
+
+    def _set_routing_mode(self, mode: str) -> None:
+        self.routing_mode = mode
+        self.decision_engine.mode = mode
+
+    def _flush_all_routes(self) -> int:
+        """Removes every installed route flow and forgets them, so traffic
+        after a mode switch is re-decided by the newly selected strategy
+        instead of continuing to ride the previous one's rules."""
+        flows = self.flow_registry.all_flows()
+        for record in flows:
+            remove_flows_for_hosts(self.datapaths, record.path, record.src_mac, record.dst_mac)
+            self.flow_registry.remove(record.src_mac, record.dst_mac)
+        return len(flows)
 
     # --- OpenFlow session lifecycle -------------------------------------
 
@@ -174,6 +218,7 @@ class SDNControllerApp(app_manager.RyuApp):
                 continue
 
             self._install_route(decision, record.src_mac, record.dst_mac)
+            self.decision_log.record(build_record(record.src_mac, record.dst_mac, decision, event="reroute"))
             logger.info(
                 "rerouted %s <-> %s onto %s (mode=%s)%s",
                 record.src_mac,
@@ -272,6 +317,7 @@ class SDNControllerApp(app_manager.RyuApp):
                 return False  # don't know dst's location yet - flood so ARP can teach us
             if not self._install_route(decision, src_mac, dst_mac):
                 return False
+            self.decision_log.record(build_record(src_mac, dst_mac, decision, event="new_flow"))
             if decision.fallback_reason:
                 logger.warning("RL fallback to Dijkstra for %s <-> %s: %s", src_mac, dst_mac, decision.fallback_reason)
             record = self.flow_registry.get(src_mac, dst_mac)

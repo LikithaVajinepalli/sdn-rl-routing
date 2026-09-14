@@ -3,6 +3,48 @@
 All notable changes to this project are logged here, one phase/feature per
 entry, newest first.
 
+## [Unreleased] — Phase 4: Visualization & Evaluation Dashboard
+
+### Added
+- `dashboard/state_feed.py` - pure snapshot builders turning NetworkState /
+  DecisionLog / ActiveFlowRegistry into the JSON the browser renders. No
+  Flask, no Ryu, so the payload shape is unit-testable on its own.
+- `dashboard/app.py` - Flask + Flask-SocketIO app: live snapshot pushes,
+  `/api/snapshot`, `/api/training-curve`, `/api/benchmark`, and a
+  same-origin `/api/mode/<mode>` so the header toggle doesn't need CORS
+  against Ryu's REST port.
+- `dashboard/server.py` - starts the dashboard inside Ryu's eventlet hub.
+  Deliberately forgiving: a missing Flask install or a failed bind logs a
+  warning and leaves the controller routing.
+- `dashboard/templates/` + `static/` - the live UI: SVG topology with
+  congestion colour-coding (positions computed client-side, so it adapts to
+  any switch count), link metrics table, decision feed showing the candidate
+  paths and live state behind each choice, and Chart.js reward/comparison
+  charts.
+- `routing/decision_log.py` - bounded decision history with per-candidate
+  state snapshots; `RoutingDecision` now carries the candidates and their
+  features, which is what lets the feed explain *why* a path won.
+- `controller/routing_api.py` - `GET/POST /routing/mode`. Switching flushes
+  installed routes so a benchmark run under each mode starts clean.
+- `scripts/benchmark.py` + `scripts/benchmark_metrics.py` - runs the same
+  scripted scenario under each routing mode and records measured latency,
+  throughput, loss and post-failure recovery time to JSON. The failure is
+  injected on the port the traffic is *actually* using (looked up from the
+  installed flow), since targeting an unrelated link makes a reroute test
+  silently vacuous - a mistake we made by hand during Phase 3 testing.
+  Parsing/measurement logic is split out and unit-tested without Mininet.
+- `scripts/make_report_charts.py` - static Matplotlib figures for the
+  written report; skips any chart whose source data is missing rather than
+  drawing invented numbers.
+- 37 new unit tests (174 total).
+
+### Note on architecture
+The dashboard runs **in-process with the controller** rather than as a
+separate service, so there is no `python dashboard.py` - `ryu-manager`
+serves it on port 8081. That was a deliberate trade (chosen over a
+polling REST client): zero lag and one copy of the state, at the cost of
+tying the dashboard's lifecycle to the controller's.
+
 ## [Unreleased] — Phase 3 fixes found during manual WSL2 testing
 
 ### Fixed

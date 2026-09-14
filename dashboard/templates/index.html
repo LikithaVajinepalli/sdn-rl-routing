@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SDN·RL Routing — Live Dashboard</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg width="30" height="30" viewBox="0 0 30 30" fill="none" aria-hidden="true">
+      <circle cx="15" cy="6" r="3.2" stroke="var(--accent)" stroke-width="1.8"/>
+      <circle cx="6" cy="22" r="3.2" stroke="var(--accent)" stroke-width="1.8"/>
+      <circle cx="24" cy="22" r="3.2" stroke="var(--accent)" stroke-width="1.8"/>
+      <path d="M15 9.2 L15 15 M15 15 L8 19.3 M15 15 L22 19.3" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round"/>
+    </svg>
+    <div>
+      <div class="brand-title">SDN·RL Routing</div>
+      <div class="brand-sub" id="brand-sub">Live Network Dashboard</div>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <div class="status">
+      <span class="dot" id="conn-dot"></span>
+      <span id="conn-label">connecting…</span>
+    </div>
+    <div class="mode-toggle" role="group" aria-label="Routing mode">
+      <button type="button" data-mode="rl" id="mode-rl">RL</button>
+      <button type="button" data-mode="dijkstra" id="mode-dijkstra">Dijkstra</button>
+    </div>
+  </div>
+</header>
+
+<section class="kpis">
+  <div class="card kpi">
+    <div class="kpi-label">Active Flows</div>
+    <div class="kpi-value mono" id="kpi-flows">—</div>
+    <div class="kpi-sub">host pairs routed</div>
+  </div>
+  <div class="card kpi">
+    <div class="kpi-label">Avg Utilization</div>
+    <div class="kpi-value mono" id="kpi-util">—</div>
+    <div class="kpi-sub" id="kpi-util-sub">across switch links</div>
+  </div>
+  <div class="card kpi">
+    <div class="kpi-label">Decisions</div>
+    <div class="kpi-value mono" id="kpi-decisions">—</div>
+    <div class="kpi-sub" id="kpi-decisions-sub">RL / Dijkstra</div>
+  </div>
+  <div class="card kpi accent">
+    <div class="kpi-label">Routing Mode</div>
+    <div class="kpi-value" id="kpi-mode">—</div>
+    <div class="kpi-sub" id="kpi-fallbacks">fallbacks: 0</div>
+  </div>
+</section>
+
+<main class="grid">
+  <section class="card">
+    <div class="card-head">
+      <div>
+        <h2>Live Topology</h2>
+        <p class="card-sub" id="topology-sub">waiting for switches…</p>
+      </div>
+      <div class="legend">
+        <span><i class="swatch ok"></i>&lt; 40%</span>
+        <span><i class="swatch warn"></i>40–75%</span>
+        <span><i class="swatch critical"></i>&gt; 75%</span>
+        <span><i class="swatch down"></i>down</span>
+      </div>
+    </div>
+    <div class="card-body">
+      <svg id="topology" viewBox="0 0 800 520" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+  </section>
+
+  <div class="side">
+    <section class="card">
+      <div class="card-head">
+        <h2>Link Metrics</h2>
+        <span class="muted small">live</span>
+      </div>
+      <div class="card-body no-pad">
+        <table class="metrics mono">
+          <thead>
+            <tr><th>Link</th><th>Util</th><th>Delay</th><th>Loss</th><th>Trust</th><th></th></tr>
+          </thead>
+          <tbody id="metrics-body">
+            <tr><td colspan="6" class="muted center">waiting for stats…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Routing Decision Log</h2>
+        <span class="muted small">newest first</span>
+      </div>
+      <div class="card-body no-pad scroll" id="decision-log">
+        <p class="muted center pad">no decisions yet — send traffic between hosts</p>
+      </div>
+    </section>
+  </div>
+</main>
+
+<section class="grid-2">
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <h2>Reward Convergence</h2>
+        <p class="card-sub" id="curve-sub">Phase 2 training run</p>
+      </div>
+    </div>
+    <div class="card-body"><canvas id="reward-chart" height="150"></canvas></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <h2>RL vs Baseline</h2>
+        <p class="card-sub" id="benchmark-sub">no benchmark run yet</p>
+      </div>
+    </div>
+    <div class="card-body"><canvas id="benchmark-chart" height="150"></canvas></div>
+  </div>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</body>
+</html>

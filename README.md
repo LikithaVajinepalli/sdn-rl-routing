@@ -127,6 +127,60 @@ failure" message, and confirm the traffic still gets through (NFR1/NFR3).
 `python -m scripts.inject_cli recover --dpid 3 --port 1` restores the link
 (existing flows are not automatically moved back - only broken ones reroute).
 
+## Running Phase 4 (the dashboard)
+
+The dashboard runs **inside the controller process** (it reads NetworkState
+directly rather than polling a REST API), so there's no separate
+`dashboard.py` to launch — starting the controller starts it:
+
+```bash
+PYTHONPATH=. ryu-manager --observe-links controller.main_app
+```
+
+Then open **http://localhost:8081** in your browser (on Windows, WSL2 forwards
+localhost automatically). Add `--dashboard-port 0` to disable it, or
+`--dashboard-port 9000` to move it.
+
+The page shows the live topology with congestion colour-coding, per-link
+metrics, the routing decision feed (with the candidate paths and live state
+behind each choice), the reward-convergence curve from Phase 2's training
+run, and the RL-vs-baseline comparison. The **RL / Dijkstra toggle** in the
+header switches routing strategy at runtime and flushes installed routes, so
+traffic after the switch is genuinely routed by the newly selected strategy.
+
+Endpoints, handy without a browser:
+```bash
+curl localhost:8081/api/snapshot        # exactly what the socket pushes
+curl localhost:8080/routing/mode        # current mode (Ryu's REST API)
+curl -X POST localhost:8080/routing/mode -H 'Content-Type: application/json' -d '{"mode":"dijkstra"}'
+```
+
+### Benchmarking RL vs the Dijkstra baseline
+
+With the controller running (and **no** other Mininet instance up — this
+builds its own):
+
+```bash
+sudo python3 -m scripts.benchmark
+```
+
+It runs the same scripted scenario under each mode — steady-state ping,
+`iperf` throughput, then a link failure injected into live traffic on the
+link that traffic is actually using — and writes measured latency,
+throughput, loss, and recovery time to `models/benchmark_results.json`. The
+dashboard's comparison view picks that file up automatically.
+
+### Static charts for the report
+
+```bash
+python3 -m scripts.make_report_charts
+```
+
+Writes `docs/figures/reward_convergence.png` and (once a benchmark exists)
+`docs/figures/rl_vs_baseline.png`. Needs no Mininet/Ryu — it only reads
+`models/training_log.csv` and `models/benchmark_results.json`, and skips any
+chart whose source data is missing rather than inventing numbers.
+
 ## Running the unit tests
 
 The test suite covers only the pure logic (topology graph structure, derived
