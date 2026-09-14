@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import time
+from typing import Optional
 
 import requests
 from mininet.link import TCLink
@@ -56,6 +57,24 @@ def parse_args():
     parser.add_argument("--iperf-seconds", type=int, default=8)
     parser.add_argument("--ping-count", type=int, default=60, help="pings during the failure phase")
     parser.add_argument("--out", default=DEFAULT_OUT)
+    parser.add_argument(
+        "--congest-delay-ms",
+        type=float,
+        default=80.0,
+        help="delay injected onto the baseline's chosen link before measuring (0 disables congestion)",
+    )
+    parser.add_argument(
+        "--congest-loss-pct",
+        type=float,
+        default=4.0,
+        help="packet loss injected onto the baseline's chosen link before measuring",
+    )
+    parser.add_argument(
+        "--settle-seconds",
+        type=float,
+        default=6.0,
+        help="pause after injecting congestion so the controller's polled metrics reflect it",
+    )
     return parser.parse_args()
 
 
@@ -73,6 +92,43 @@ def inject_failure(rest_url: str, dpid: int, port: int) -> dict:
 
 def recover_link(rest_url: str, dpid: int, port: int) -> None:
     requests.post(f"{rest_url}/inject/recover", json={"dpid": dpid, "port": port}, timeout=5)
+
+
+def inject_congestion(rest_url: str, dpid: int, port: int, delay_ms: float, loss_pct: float) -> dict:
+    response = requests.post(
+        f"{rest_url}/inject/congestion",
+        json={"dpid": dpid, "port": port, "delay_ms": delay_ms, "loss_pct": loss_pct},
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def clear_congestion(rest_url: str, dpid: int, port: int) -> None:
+    try:
+        requests.post(
+            f"{rest_url}/inject/congestion",
+            json={"dpid": dpid, "port": port, "delay_ms": 0.0, "loss_pct": 0.0},
+            timeout=10,
+        )
+    except requests.RequestException:
+        pass
+
+
+def find_baseline_link(net, args) -> Optional[int]:
+    """The port the *Dijkstra* baseline routes h1_1 -> h5_1 out of.
+
+    Congesting this specific link is what makes the comparison mean
+    something: the baseline picks purely on hop count so it keeps using it
+    regardless, while the RL agent sees the degraded delay/loss in its state
+    and can choose a different path. Without this, both strategies measure
+    identically on an idle network - which is exactly what the first
+    benchmark run showed."""
+    set_routing_mode(args.rest_url, "dijkstra")
+    src, dst = net.get("h1_1"), net.get("h5_1")
+    src.cmd(f"ping -c 3 -W 1 {dst.IP()}")
+    time.sleep(1)
+    return dump_route_port(net.get("s1"), src.MAC(), dst.MAC())
 
 
 def dump_route_port(switch, src_mac: str, dst_mac: str):
@@ -95,6 +151,9 @@ def run_mode(net, args, mode: str) -> dict:
     # Warm-up: get ARP resolved and flows installed under this mode.
     src.cmd(f"ping -c 3 -W 1 {dst.IP()}")
     time.sleep(1)
+
+    chosen_port = dump_route_port(edge_switch, src.MAC(), dst.MAC())
+    print(f"  this mode routes h1_1 -> h5_1 out of s1 port {chosen_port}")
 
     print("  measuring steady-state latency/loss…")
     ping_output = src.cmd(f"ping -c 20 -i 0.2 -W 1 {dst.IP()}")
@@ -131,6 +190,7 @@ def run_mode(net, args, mode: str) -> dict:
         time.sleep(2)  # let the link come back before the next mode
 
     summary = summarise_mode(steady, throughput, recovery)
+    summary["chosen_port"] = chosen_port
     print(f"  -> {summary}")
     return summary
 
@@ -153,16 +213,44 @@ def main():
         autoSetMacs=True,
     )
 
-    results = {"timestamp": time.time(), "scenario": vars(args), "modes": {}}
+    results = {"timestamp": time.time(), "scenario": vars(args), "modes": {}, "congestion": None}
+    congested_port = None
     try:
         net.start()
         print("waiting for topology discovery to settle…")
         time.sleep(12)  # LLDP discovery + a couple of stats polls
         net.pingAll(timeout="1")  # prime host locations for every pair
 
+        # Congest the link the BASELINE insists on using, identically for
+        # both modes. On an idle network the two strategies measure the same
+        # because there's nothing to route around - this is what gives the
+        # comparison something to actually compare.
+        if args.congest_delay_ms > 0 or args.congest_loss_pct > 0:
+            congested_port = find_baseline_link(net, args)
+            if congested_port is None:
+                print("! could not determine the baseline's link - running without congestion")
+            else:
+                print(
+                    f"\ncongesting s1 port {congested_port} "
+                    f"(+{args.congest_delay_ms}ms, {args.congest_loss_pct}% loss) — the path Dijkstra picks"
+                )
+                inject_congestion(
+                    args.rest_url, 1, congested_port, args.congest_delay_ms, args.congest_loss_pct
+                )
+                results["congestion"] = {
+                    "dpid": 1,
+                    "port": congested_port,
+                    "delay_ms": args.congest_delay_ms,
+                    "loss_pct": args.congest_loss_pct,
+                }
+                print(f"waiting {args.settle_seconds}s for the controller's metrics to reflect it…")
+                time.sleep(args.settle_seconds)
+
         for mode in args.modes:
             results["modes"][mode] = run_mode(net, args, mode)
     finally:
+        if congested_port is not None:
+            clear_congestion(args.rest_url, 1, congested_port)
         net.stop()
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
@@ -171,6 +259,14 @@ def main():
     print(f"\nWrote {args.out}")
     for mode, summary in results["modes"].items():
         print(f"  {mode:9s} {summary}")
+
+    # The headline the report needs: did the two strategies actually route
+    # differently, and did it show up in the measurements?
+    ports = {mode: results["modes"][mode].get("chosen_port") for mode in results["modes"]}
+    if len(set(p for p in ports.values() if p is not None)) > 1:
+        print(f"\n  -> the modes chose DIFFERENT paths out of s1: {ports}")
+    elif results["congestion"]:
+        print(f"\n  -> both modes chose the same path out of s1 ({ports}) despite injected congestion")
 
 
 if __name__ == "__main__":
