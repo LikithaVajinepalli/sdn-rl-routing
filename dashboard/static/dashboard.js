@@ -314,31 +314,34 @@ async function loadBenchmarkChart() {
 
 /* ---------- wiring ---------- */
 
-function fatal(message) {
+let socketConnected = false;
+
+function setStatus(state, message) {
   // A silent failure here looks identical to "no traffic yet", which cost
-  // real debugging time - so say it plainly on the page.
-  document.getElementById('conn-dot').className = 'dot lost';
+  // real debugging time - so always say plainly what's going on.
+  document.getElementById('conn-dot').className = `dot ${state}`;
   document.getElementById('conn-label').textContent = message;
-  console.error(message);
 }
 
 if (typeof io === 'undefined') {
-  fatal('socket.io failed to load — live updates unavailable');
+  setStatus('lost', 'socket.io did not load — falling back to polling');
+  console.error('socket.io client missing: expected /static/vendor/socket.io.min.js to define window.io');
 } else {
   const socket = io();
 
   socket.on('connect', () => {
-    document.getElementById('conn-dot').className = 'dot live';
-    document.getElementById('conn-label').textContent = 'connected';
+    socketConnected = true;
+    setStatus('live', 'connected');
   });
 
   socket.on('connect_error', (err) => {
-    fatal(`socket error: ${err && err.message ? err.message : 'connection failed'}`);
+    socketConnected = false;
+    setStatus('lost', `socket error: ${err && err.message ? err.message : 'connection failed'}`);
   });
 
   socket.on('disconnect', () => {
-    document.getElementById('conn-dot').className = 'dot lost';
-    document.getElementById('conn-label').textContent = 'disconnected';
+    socketConnected = false;
+    setStatus('lost', 'disconnected');
   });
 
   socket.on('snapshot', (snapshot) => {
@@ -352,17 +355,16 @@ if (typeof io === 'undefined') {
 // Fall back to plain polling if the socket can't be used, so the dashboard
 // still shows live data (just less promptly) rather than nothing at all.
 setInterval(async () => {
-  const label = document.getElementById('conn-label').textContent;
-  if (label === 'connected') return;
+  if (socketConnected) return;
   try {
     const snapshot = await (await fetch('/api/snapshot')).json();
     renderSummary(snapshot.summary);
     renderTopology(snapshot.topology);
     renderMetrics(snapshot.metrics);
     renderDecisions(snapshot.decisions);
-    document.getElementById('conn-label').textContent += ' (polling)';
+    setStatus('lost', 'live updates unavailable — polling every 3s');
   } catch (err) {
-    /* controller down - leave the existing message in place */
+    setStatus('lost', 'controller unreachable');
   }
 }, 3000);
 

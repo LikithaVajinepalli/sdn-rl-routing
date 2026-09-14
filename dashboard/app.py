@@ -62,6 +62,15 @@ def create_app(
         static_folder=os.path.join(os.path.dirname(__file__), "static"),
     )
     app.config["SECRET_KEY"] = os.environ.get("DASHBOARD_SECRET", "sdn-rl-routing-dev")
+    # Flask caches compiled templates for the process lifetime and tells
+    # browsers to cache static files for 12 hours. Both bite hard here: the
+    # controller is long-running, so an edited page silently kept serving the
+    # old markup while the freshly-read JS confusingly did load - which is
+    # exactly how a dead CDN reference survived a restart. Neither cache is
+    # worth anything for a locally-served dashboard.
+    app.config["TEMPLATES_AUTO_RELOAD"] = True
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+    app.jinja_env.auto_reload = True
     socketio = SocketIO(
         app,
         async_mode=_async_mode(),
