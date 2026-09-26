@@ -1,5 +1,5 @@
 {
-  "timestamp": 1789398762.4986238,
+  "timestamp": 1789400089.8941617,
   "scenario": {
     "switches": 8,
     "hosts_per_switch": 2,
@@ -15,22 +15,34 @@
     ],
     "iperf_seconds": 8,
     "ping_count": 60,
-    "out": "models/benchmark_results.json"
+    "out": "models/benchmark_results.json",
+    "congest_delay_ms": 80.0,
+    "congest_loss_pct": 4.0,
+    "settle_seconds": 6.0
   },
   "modes": {
     "dijkstra": {
-      "avg_latency_ms": 21.147,
-      "max_latency_ms": 21.692,
+      "avg_latency_ms": 95.806,
+      "max_latency_ms": 96.091,
       "packet_loss_pct": 0.0,
-      "throughput_mbps": 11.9,
-      "recovery_time_s": 0.0
+      "throughput_mbps": 1.42,
+      "recovery_time_s": 0.2,
+      "chosen_port": 5
     },
     "rl": {
-      "avg_latency_ms": 21.298,
-      "max_latency_ms": 21.732,
-      "packet_loss_pct": 0.0,
-      "throughput_mbps": 11.8,
-      "recovery_time_s": 0.0
+      "avg_latency_ms": 95.891,
+      "max_latency_ms": 96.343,
+      "packet_loss_pct": 5.0,
+      "throughput_mbps": 0.931,
+      "recovery_time_s": 0.0,
+      "chosen_port": 5
     }
+  },
+  "congestion": {
+    "dpid": 1,
+    "port": 5,
+    "iface": "s1-eth5",
+    "delay_ms": 80.0,
+    "loss_pct": 4.0
   }
 }
